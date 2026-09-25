@@ -50,6 +50,15 @@ export default function Home() {
       setProject(await res.json());
     } catch(e) { setError(String(e)); }
   }
+  async function jobAction(action: 'cancel' | 'retry') {
+    if (!id) return;
+    setError('');
+    try {
+      const res = await fetch(`${API}/projects/${id}/${action}`, {method:'POST'});
+      if (!res.ok) throw new Error(await res.text());
+      setProject(await res.json());
+    } catch(e) { setError(String(e)); }
+  }
   useEffect(() => { const query = new URLSearchParams(window.location.search).get('project'); if (query) setId(query); }, []);
   const asset = (path:string) => `${API}/projects/${id}/assets/${path}`;
   return <main>
@@ -66,6 +75,8 @@ export default function Home() {
     </div><div className="panel output"><h2>Output</h2>
       {!project && <div className="empty">Your render and scene files will appear here.</div>}
       {project && <><div className="status"><strong>{project.status.toUpperCase()}</strong><span>{project.stage}</span></div><div className="id">Project {project.id}</div>
+        {(project.status==='queued' || project.status==='running') && <button className="secondary" onClick={()=>jobAction('cancel')}>Cancel job</button>}
+        {(project.status==='failed' || project.status==='cancelled') && <button className="secondary" onClick={()=>jobAction('retry')}>Retry job</button>}
         {project.error && <p className="error">{project.error}</p>}
         {project.status==='complete' && <><video controls src={asset('final.mp4')+`?v=${project.revision??0}`} playsInline /><div className="links"><a href={asset('final.mp4')}>Final MP4</a><a href={asset('timeline.json')}>Timeline JSON</a><a href={asset('captions.srt')}>Captions SRT</a></div></>}
         <div className="scenes">{project.scenes.map(s=><article key={s.id}><div className="scene-heading"><strong>Scene {s.id}</strong><small>{s.duration.toFixed(1)}s · {s.status}</small></div><p>{s.narration}</p><textarea aria-label={`Scene ${s.id} visual prompt`} value={edit[s.id]??s.visual_prompt} onChange={e=>setEdit({...edit,[s.id]:e.target.value})} rows={3}/>{s.clip && <a href={asset(s.clip)}>View clip ↗</a>}{project.status==='complete' && <button className="secondary" onClick={()=>redo(s)}>Regenerate scene</button>}</article>)}</div>
