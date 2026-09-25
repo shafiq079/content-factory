@@ -24,8 +24,6 @@ npm run dev
 
 Open `http://localhost:3000`. Default settings run the **preview**: deterministic scene plan, simple non-AI colored test clips, silent WAVs, estimated script captions and FFmpeg render. It produces a playable MP4 and editable assets, but is not a content-quality demo. The backend API is at `http://127.0.0.1:8000/docs`.
 
-To use your own footage without a GPU, create a preview project and choose **Replace scene footage** for each scene. Upload an MP4 or MOV up to 200 MiB per clip. The worker fits the footage to that scene's duration and output size, keeps the project narration/captions, and renders a new final MP4. You can mix uploaded footage and generated scenes. Preview mode still uses silent audio unless Kokoro is configured; replacing footage does not create a spoken narration.
-
 ## Real model setup on your GPU machine
 
 1. Install and configure the [official LTX-2 repository](https://github.com/Lightricks/LTX-2) and its 2.5 distilled pipeline. Download the model files listed in its current README. The weights are large; the official ComfyUI workflow recommends CUDA with **32 GB+ VRAM and 100 GB+ disk**; this is a planning estimate, not a proven minimum for our Python configuration. Lower memory can sometimes use quantization/offload; test your own GPU before budgeting.
@@ -47,7 +45,7 @@ The server stores projects on disk and uses a SQLite job queue in the project di
 - The template planner is a deterministic test fixture. Ollama creates structured scenes but does not retrieve current sources or verify claims; topics needing research need an explicit cited retrieval step.
 - The first real video provider is LTX 2.5 distilled. Its own native audio is discarded during final assembly in favor of dedicated narration; native synchronized effects are a later routing choice. Long narration may make a short generated clip loop.
 - Without `CAPTION_PROVIDER=whisper`, caption timing is estimated from the script and distributed evenly across each scene. Whisper mode transcribes generated voice with word timestamps but does not guarantee perfect forced alignment; review captions before publishing.
-- The UI can replace scene footage and edit visual prompts. Narration editing, voice upload, music, sound effects, transitions beyond cuts, caption styling presets and Wan are future additions.
+- The UI edits visual prompts only. Music, sound effects, transitions beyond cuts, caption styling presets, asset replacement and Wan are future additions.
 - Generated footage has **not** been verified in this workspace because it has no NVIDIA GPU, official checkpoint files or Ollama/Kokoro installations. Only the preview mode was run end to end.
 
 ## Technical choices and licenses (checked 25 September 2026)

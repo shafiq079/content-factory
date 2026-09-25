@@ -1,14 +1,12 @@
 from contextlib import asynccontextmanager
 import threading
-import uuid
 
-from fastapi import FastAPI, HTTPException, Request as HttpRequest
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
-from starlette.concurrency import run_in_threadpool
 
-from . import core, media, providers
+from . import core, providers
 from .core import Request, create, load, project_path
 from .jobs import JobStore, worker_loop
 
@@ -28,7 +26,7 @@ async def lifespan(application: FastAPI):
         worker.join(timeout=1)
 
 
-app = FastAPI(title="Content Factory", version="0.3.0", lifespan=lifespan)
+app = FastAPI(title="Content Factory", version="0.2.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"], allow_credentials=False, allow_methods=["GET", "POST"], allow_headers=["Content-Type"])
 
 
@@ -70,49 +68,6 @@ def regenerate_scene(project_id: str, scene_id: int, edit: SceneEdit):
         raise HTTPException(404, "Project or scene not found")
     except RuntimeError as exc:
         raise HTTPException(409, str(exc))
-
-
-MAX_CLIP_BYTES = 200 * 1024 * 1024
-
-
-@app.post("/projects/{project_id}/scenes/{scene_id}/clip", status_code=202)
-async def upload_scene_clip(project_id: str, scene_id: int, request: HttpRequest):
-    """Accept raw MP4/MOV bytes and queue the CPU render; cap disk use per upload."""
-    try:
-        folder = project_path(project_id)
-    except (ValueError, FileNotFoundError) as exc:
-        raise HTTPException(404, "Project not found") from exc
-    if request.headers.get("content-type", "").split(";")[0] not in ("video/mp4", "video/quicktime", "application/octet-stream"):
-        raise HTTPException(415, "Upload an MP4 or MOV video")
-    length = request.headers.get("content-length", "0")
-    if not length.isdigit():
-        raise HTTPException(400, "Invalid content length")
-    if int(length) > MAX_CLIP_BYTES:
-        raise HTTPException(413, "Clip exceeds 200 MiB")
-    upload_dir = folder / "uploads"
-    upload_dir.mkdir(exist_ok=True)
-    source = upload_dir / f"{uuid.uuid4().hex}.source"
-    try:
-        size = 0
-        with source.open("xb") as output:
-            async for chunk in request.stream():
-                size += len(chunk)
-                if size > MAX_CLIP_BYTES:
-                    raise HTTPException(413, "Clip exceeds 200 MiB")
-                output.write(chunk)
-        try:
-            await run_in_threadpool(lambda: media.stream(media.inspect(source), "video"))
-        except media.MediaValidationError as exc:
-            raise HTTPException(422, str(exc)) from exc
-        try:
-            return app.state.jobs.enqueue_import(project_id, scene_id, f"uploads/{source.name}")
-        except ValueError as exc:
-            raise HTTPException(404, str(exc)) from exc
-        except RuntimeError as exc:
-            raise HTTPException(409, str(exc)) from exc
-    except Exception:
-        source.unlink(missing_ok=True)
-        raise
 
 
 @app.post("/projects/{project_id}/cancel", status_code=202)
