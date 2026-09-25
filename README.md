@@ -38,7 +38,7 @@ Each project lives in `content-factory/projects/<uuid>/`: `timeline.json` (the c
 
 Click **Regenerate scene** after editing its prompt. That regenerates one clip and its voice, recalculates subsequent start times/captions, and rerenders the final video. At present changing an entire project's voice or caption style requires editing project JSON and a future rerender endpoint. An error in one scene leaves intermediate files available for inspection.
 
-The server stores projects on disk and uses in-process background threads to avoid blocking API requests. This is suitable for a **single local development process only**: running jobs are lost if the process restarts; there is no authentication, durable queue, resource scheduler or database. Bind to loopback; add those controls before any multi-user or public deployment. Longer renders at 1080×1920 can be CPU intensive.
+The server stores projects on disk and uses a SQLite job queue in the project directory. A worker claims one job at a time and renews a lease. On restart an expired lease can be claimed again and completed scene assets are reused. Jobs can be cancelled between stages or retried from the last saved scene. A currently running model or FFmpeg process is allowed to finish its step before cancellation takes effect. Use a shared local filesystem for the SQLite database and assets; this implementation is **single-host** and has no authentication or multi-host resource scheduler. Bind to loopback; add access controls and stronger resource management before public deployment. Longer renders at 1080×1920 can be CPU intensive.
 
 ## Scope and present limitations
 
