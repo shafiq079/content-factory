@@ -68,6 +68,8 @@ class JobStore:
                 scene["visual_prompt"] = visual_prompt
             if narration is not None:
                 scene["narration"] = narration
+                manifest["script"] = " ".join(s["narration"] for s in manifest["scenes"])
+                manifest["hook"] = manifest["scenes"][0]["narration"]
             scene["status"] = "pending"
             for asset in ("clip", "voice"):
                 (core.project_path(project_id) / scene[asset]).unlink(missing_ok=True)

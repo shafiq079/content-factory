@@ -28,6 +28,10 @@ def test_preview_and_regenerate(monkeypatch, tmp_path: Path):
         result = wait_for_completion(client, project_id)
         assert result["status"] == "complete", result["error"]
         assert result["schema_version"] == 2
+        assert result["idea"].startswith("Preview placeholder")
+        assert result["hook"] == result["scenes"][0]["narration"]
+        assert result["script"] == " ".join(scene["narration"] for scene in result["scenes"])
+        assert result["research"] == []
         assert len(result["scenes"]) == 2
         assert result["scenes"][0]["start"] == 0
         assert result["scenes"][1]["start"] == result["scenes"][0]["duration"]
@@ -46,6 +50,8 @@ def test_preview_and_regenerate(monkeypatch, tmp_path: Path):
         assert result["revision"] == 1
         assert result["scenes"][0]["visual_prompt"] == "A new preview prompt"
         assert "Updated narration" in (tmp_path / project_id / "captions.srt").read_text()
+        assert result["hook"] == "Updated narration for scene one."
+        assert result["script"].startswith("Updated narration for scene one.")
 
 
 def test_restart_reclaims_expired_job(monkeypatch, tmp_path: Path):
