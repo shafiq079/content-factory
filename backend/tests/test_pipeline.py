@@ -47,18 +47,6 @@ def test_preview_and_regenerate(monkeypatch, tmp_path: Path):
         assert result["scenes"][0]["visual_prompt"] == "A new preview prompt"
         assert "Updated narration" in (tmp_path / project_id / "captions.srt").read_text()
 
-        source = tmp_path / "source.mp4"
-        core.run("ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=red:s=256x448:r=24:d=1",
-                 "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(source))
-        uploaded = client.post(f"/projects/{project_id}/scenes/1/clip", content=source.read_bytes(), headers={"Content-Type": "video/mp4"})
-        assert uploaded.status_code == 202, uploaded.text
-        result = wait_for_completion(client, project_id)
-        assert result["status"] == "complete", result["error"]
-        assert result["revision"] == 2
-        assert "-import-" in result["scenes"][0]["clip"]
-        assert (tmp_path / project_id / result["scenes"][0]["clip"]).is_file()
-        assert not list((tmp_path / project_id / "uploads").glob("*.source"))
-
 
 def test_restart_reclaims_expired_job(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(core, "ROOT", tmp_path)

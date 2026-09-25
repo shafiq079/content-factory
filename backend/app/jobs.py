@@ -80,27 +80,6 @@ class JobStore:
                 (project_id, "regenerate", scene_id, "queued", time.time()))
             return manifest
 
-    def enqueue_import(self, project_id: str, scene_id: int, source: str) -> dict:
-        with self.connect() as db:
-            db.execute("BEGIN IMMEDIATE")
-            row = db.execute("SELECT state FROM jobs WHERE project_id=?", (project_id,)).fetchone()
-            if row and row["state"] in ("queued", "running"):
-                raise RuntimeError("Project already has a running or queued job")
-            manifest = core.load(project_id)
-            if manifest["status"] != "complete":
-                raise RuntimeError("Only completed projects can import clips")
-            if not any(scene["id"] == scene_id for scene in manifest["scenes"]):
-                raise ValueError("Unknown scene")
-            manifest["pending_import"] = {"scene_id": scene_id, "source": source}
-            manifest.update(status="queued", stage=f"queued to import scene {scene_id}", error=None)
-            core.atomic_write(core.project_path(project_id) / "timeline.json", manifest)
-            db.execute("""INSERT INTO jobs(project_id,kind,scene_id,state,updated_at)
-                VALUES(?,?,?,?,?) ON CONFLICT(project_id) DO UPDATE SET
-                kind=excluded.kind,scene_id=excluded.scene_id,state='queued',token=NULL,
-                lease_until=NULL,cancel_requested=0,updated_at=excluded.updated_at""",
-                (project_id, "import", scene_id, "queued", time.time()))
-            return manifest
-
     def claim(self) -> dict | None:
         now = time.time()
         with self.connect() as db:
@@ -179,8 +158,6 @@ def worker_loop(store: JobStore, stop: threading.Event) -> None:
             check = lambda: store.cancelled(project_id, token)
             if job["kind"] == "regenerate":
                 core.regenerate_work(project_id, job["scene_id"], check)
-            elif job["kind"] == "import":
-                core.import_clip_work(project_id, job["scene_id"], check)
             else:
                 core.process(project_id, check)
             state = core.load(project_id)["status"]
