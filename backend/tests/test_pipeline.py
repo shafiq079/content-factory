@@ -27,6 +27,7 @@ def test_preview_and_regenerate(monkeypatch, tmp_path: Path):
         project_id = response.json()["id"]
         result = wait_for_completion(client, project_id)
         assert result["status"] == "complete", result["error"]
+        assert result["schema_version"] == 2
         assert len(result["scenes"]) == 2
         assert result["scenes"][0]["start"] == 0
         assert result["scenes"][1]["start"] == result["scenes"][0]["duration"]
@@ -91,6 +92,7 @@ def test_retry_reuses_completed_scene(monkeypatch, tmp_path: Path):
         calls.append(scene["id"])
         if scene["id"] == 2 and fail_once["value"]:
             fail_once["value"] = False
+            output.write_bytes(b"unfinished video")
             raise RuntimeError("Simulated interruption before scene 2")
         return original(self, scene, output, request)
 
@@ -101,7 +103,9 @@ def test_retry_reuses_completed_scene(monkeypatch, tmp_path: Path):
         failed = wait_for_completion(client, project_id)
         assert failed["status"] == "failed"
         assert failed["scenes"][0]["status"] == "ready"
+        assert (tmp_path / project_id / "clips/scene-02.partial.mp4").read_bytes() == b"unfinished video"
         assert client.post(f"/projects/{project_id}/retry").status_code == 202
         recovered = wait_for_completion(client, project_id)
         assert recovered["status"] == "complete", recovered["error"]
+        assert not (tmp_path / project_id / "clips/scene-02.partial.mp4").exists()
         assert calls == [1, 2, 2]

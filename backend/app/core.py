@@ -5,17 +5,17 @@ import json
 import math
 import os
 import re
-import shutil
 import subprocess
 import sys
 import urllib.request
 import uuid
-import wave
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Callable
 
 from pydantic import BaseModel, Field, field_validator
+
+from . import contracts, media
 
 
 ROOT = Path(os.getenv("PROJECTS_DIR", Path(__file__).resolve().parents[2] / "projects")).resolve()
@@ -213,6 +213,7 @@ def captions(scenes: list[dict], project_dir: Path, whisper: bool) -> None:
             lines += [str(index), f"{srt_time(offset+group[0][0])} --> {srt_time(offset+group[-1][1])}", " ".join(x[2] for x in group), ""]
             index += 1
     (project_dir / "captions.srt").write_text("\n".join(lines), encoding="utf-8")
+    media.validate_captions(project_dir / "captions.srt", sum(s["duration"] for s in scenes))
 
 
 def render(project_dir: Path, manifest: dict) -> None:
@@ -235,6 +236,7 @@ def render(project_dir: Path, manifest: dict) -> None:
     subprocess.run(["ffmpeg", "-y", "-i", str(raw), "-vf", "subtitles=captions.srt:force_style='FontSize=15,Alignment=2,MarginV=125,Outline=2'",
                     "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-c:a", "copy", "-movflags", "+faststart", "final.partial.mp4"],
                    check=True, cwd=project_dir, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=3600)
+    media.validate_final(project_dir / "final.partial.mp4", req.width, req.height, sum(s["duration"] for s in manifest["scenes"]))
     (project_dir / "final.partial.mp4").replace(project_dir / "final.mp4")
 
 
@@ -264,14 +266,19 @@ def project_path(project_id: str) -> Path:
 
 
 def load(project_id: str) -> dict:
-    return json.loads((project_path(project_id) / "timeline.json").read_text(encoding="utf-8"))
+    path = project_path(project_id) / "timeline.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    upgraded = contracts.migrate_timeline(data)
+    if data.get("schema_version") != contracts.SCHEMA_VERSION:
+        atomic_write(path, upgraded)
+    return upgraded
 
 
 def create(request: Request) -> dict:
     project_id = uuid.uuid4().hex
     folder = ROOT / project_id
     folder.mkdir()
-    manifest = {"id": project_id, "request": request.model_dump(), "status": "queued", "stage": "queued", "scenes": [], "assets": {}, "error": None, "revision": 0}
+    manifest = {"schema_version": contracts.SCHEMA_VERSION, "id": project_id, "request": request.model_dump(), "status": "queued", "stage": "queued", "scenes": [], "assets": {}, "error": None, "revision": 0}
     atomic_write(folder / "timeline.json", manifest)
     return manifest
 
@@ -281,6 +288,8 @@ class JobCancelled(Exception):
 
 
 def process(project_id: str, is_cancelled: Callable[[], bool] = lambda: False) -> None:
+    from . import providers
+
     folder = project_path(project_id)
     manifest = load(project_id)
     req = Request.model_validate(manifest["request"])
@@ -292,18 +301,20 @@ def process(project_id: str, is_cancelled: Callable[[], bool] = lambda: False) -
             raise JobCancelled("Cancellation requested")
     try:
         if manifest["status"] == "complete" and (folder / "final.mp4").is_file():
+            media.validate_final(folder / "final.mp4", req.width, req.height, sum(s["duration"] for s in manifest["scenes"]))
             return
         manifest["status"] = "running"
         manifest["error"] = None
         check()
+        providers.preflight(req)
         if not manifest["scenes"]:
             save("planning")
-            planner = OllamaPlanner() if req.planner_provider == "ollama" else TemplatePlanner()
-            manifest["scenes"] = planner.plan(req)
+            planner = providers.make("planner", req.planner_provider)
+            manifest["scenes"] = contracts.validate_scenes(planner.plan(req))
             save("scene plan ready")
         scenes = manifest["scenes"]
-        video = LTX25Video() if req.video_provider == "ltx25" else PreviewVideo()
-        voice = KokoroVoice() if req.voice_provider == "kokoro" else SilentVoice()
+        video = providers.make("video", req.video_provider)
+        voice = providers.make("voice", req.voice_provider)
         (folder / "clips").mkdir(exist_ok=True)
         (folder / "voice").mkdir(exist_ok=True)
         start = 0.0
@@ -313,16 +324,30 @@ def process(project_id: str, is_cancelled: Callable[[], bool] = lambda: False) -
             scene["clip"] = f"clips/scene-{scene['id']:02d}.mp4"
             scene["voice"] = f"voice/scene-{scene['id']:02d}.wav"
             clip, audio = folder / scene["clip"], folder / scene["voice"]
+            if clip.is_file():
+                try:
+                    media.validate_clip(clip, scene["duration"])
+                except media.MediaValidationError:
+                    clip.unlink()
             if not clip.is_file():
                 save(f"generating scene {scene['id']}/{len(scenes)}")
                 partial = clip.with_name(clip.stem + ".partial.mp4")
+                partial.unlink(missing_ok=True)
                 video.generate(scene, partial, req)
+                media.validate_clip(partial, scene["duration"])
                 partial.replace(clip)
             check()
+            if audio.is_file():
+                try:
+                    media.validate_voice(audio, scene["duration"], req.voice_provider == "silent")
+                except media.MediaValidationError:
+                    audio.unlink()
             if not audio.is_file():
                 save(f"voicing scene {scene['id']}/{len(scenes)}")
                 partial = audio.with_name(audio.stem + ".partial.wav")
+                partial.unlink(missing_ok=True)
                 voice.generate(scene["narration"], partial, scene["duration"], req.language)
+                media.validate_voice(partial, scene["duration"], req.voice_provider == "silent")
                 partial.replace(audio)
             if req.voice_provider == "kokoro" and scene["status"] != "ready":
                 scene["duration"] = max(probe_duration(audio), 0.3)
@@ -332,7 +357,7 @@ def process(project_id: str, is_cancelled: Callable[[], bool] = lambda: False) -
         manifest["duration_actual"] = round(start,3)
         check()
         save("captions")
-        captions(scenes, folder, req.voice_provider == "kokoro" and os.getenv("CAPTION_PROVIDER") == "whisper")
+        captions(scenes, folder, providers.caption_choice(req) == "whisper")
         check()
         save("rendering")
         render(folder, manifest)
@@ -350,6 +375,8 @@ def process(project_id: str, is_cancelled: Callable[[], bool] = lambda: False) -
 
 
 def regenerate_work(project_id: str, scene_id: int, is_cancelled: Callable[[], bool] = lambda: False) -> None:
+    from . import providers
+
     folder = project_path(project_id)
     manifest = load(project_id)
     scene = next(s for s in manifest["scenes"] if s["id"] == scene_id)
@@ -359,20 +386,29 @@ def regenerate_work(project_id: str, scene_id: int, is_cancelled: Callable[[], b
             raise JobCancelled("Cancellation requested")
     try:
         check()
+        providers.preflight(req)
         manifest.update(status="running", stage=f"regenerating scene {scene_id}", error=None)
         atomic_write(folder / "timeline.json", manifest)
-        video = LTX25Video() if req.video_provider == "ltx25" else PreviewVideo()
-        voice = KokoroVoice() if req.voice_provider == "kokoro" else SilentVoice()
+        video = providers.make("video", req.video_provider)
+        voice = providers.make("voice", req.voice_provider)
         clip, audio = folder / scene["clip"], folder / scene["voice"]
         if not clip.is_file():
             partial = clip.with_name(clip.stem + ".partial.mp4")
+            partial.unlink(missing_ok=True)
             video.generate(scene, partial, req)
+            media.validate_clip(partial, scene["duration"])
             partial.replace(clip)
+        else:
+            media.validate_clip(clip, scene["duration"])
         check()
         if not audio.is_file():
             partial = audio.with_name(audio.stem + ".partial.wav")
+            partial.unlink(missing_ok=True)
             voice.generate(scene["narration"], partial, scene["duration"], req.language)
+            media.validate_voice(partial, scene["duration"], req.voice_provider == "silent")
             partial.replace(audio)
+        else:
+            media.validate_voice(audio, scene["duration"], req.voice_provider == "silent")
         if req.voice_provider == "kokoro" and scene["status"] != "ready":
             scene["duration"] = probe_duration(audio)
         scene["status"] = "ready"
@@ -383,7 +419,7 @@ def regenerate_work(project_id: str, scene_id: int, is_cancelled: Callable[[], b
             s["start"] = round(start, 3)
             start += s["duration"]
         manifest["duration_actual"] = round(start,3)
-        captions(manifest["scenes"], folder, req.voice_provider == "kokoro" and os.getenv("CAPTION_PROVIDER") == "whisper")
+        captions(manifest["scenes"], folder, providers.caption_choice(req) == "whisper")
         check()
         render(folder, manifest)
         export_otio(folder, manifest["scenes"])

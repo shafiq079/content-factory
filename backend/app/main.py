@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from . import core
+from . import core, providers
 from .core import Request, create, load, project_path
 from .jobs import JobStore, worker_loop
 
@@ -37,6 +37,10 @@ def health():
 
 @app.post("/projects", status_code=202)
 def new_project(request: Request):
+    try:
+        providers.preflight(request)
+    except RuntimeError as exc:
+        raise HTTPException(422, str(exc)) from exc
     project = create(request)
     app.state.jobs.enqueue_generate(project["id"])
     return project
@@ -58,6 +62,7 @@ class SceneEdit(BaseModel):
 @app.post("/projects/{project_id}/scenes/{scene_id}/regenerate", status_code=202)
 def regenerate_scene(project_id: str, scene_id: int, edit: SceneEdit):
     try:
+        providers.preflight(Request.model_validate(load(project_id)["request"]))
         return app.state.jobs.enqueue_regeneration(project_id, scene_id, edit.visual_prompt, edit.narration)
     except (ValueError, FileNotFoundError):
         raise HTTPException(404, "Project or scene not found")
