@@ -430,3 +430,59 @@ def regenerate_work(project_id: str, scene_id: int, is_cancelled: Callable[[], b
     except Exception as exc:
         manifest.update(status="failed", stage="failed", error=f"{type(exc).__name__}: {exc}")
     atomic_write(folder / "timeline.json", manifest)
+
+
+def import_clip_work(project_id: str, scene_id: int, is_cancelled: Callable[[], bool] = lambda: False) -> None:
+    """Use uploaded footage in the timeline and render it without a video model."""
+    folder = project_path(project_id)
+    manifest = load(project_id)
+    if manifest["status"] == "complete" and "pending_import" not in manifest:
+        return
+    req = Request.model_validate(manifest["request"])
+    source_name = manifest["pending_import"]["source"]
+    if not re.fullmatch(r"uploads/[a-f0-9]{32}\.source", source_name):
+        raise ValueError("Invalid staged upload path")
+    source = folder / source_name
+    scene = next(s for s in manifest["scenes"] if s["id"] == scene_id)
+
+    def check() -> None:
+        if is_cancelled():
+            raise JobCancelled("Cancellation requested")
+
+    def save(stage: str) -> None:
+        manifest["stage"] = stage
+        atomic_write(folder / "timeline.json", manifest)
+
+    try:
+        check()
+        manifest.update(status="running", error=None)
+        save(f"preparing uploaded scene {scene_id}")
+        media.stream(media.inspect(source), "video")
+        target_name = f"clips/scene-{scene_id:02d}-import-{source.stem}.mp4"
+        target = folder / target_name
+        if not target.is_file():
+            partial = target.with_name(target.stem + ".partial.mp4")
+            partial.unlink(missing_ok=True)
+            run("ffmpeg", "-y", "-stream_loop", "-1", "-i", str(source), "-an",
+                "-vf", f"scale={req.width}:{req.height}:force_original_aspect_ratio=increase,crop={req.width}:{req.height},fps=24,setsar=1",
+                "-t", str(scene["duration"]), "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", str(partial))
+            media.validate_clip(partial, scene["duration"])
+            partial.replace(target)
+        media.validate_clip(target, scene["duration"])
+        check()
+        scene["clip"] = target_name
+        save("rendering imported clip")
+        captions(manifest["scenes"], folder, req.voice_provider == "kokoro" and os.getenv("CAPTION_PROVIDER") == "whisper")
+        render(folder, manifest)
+        export_otio(folder, manifest["scenes"])
+        manifest["revision"] = manifest.get("revision", 0) + 1
+        manifest.pop("pending_import")
+        manifest.update(status="complete", error=None)
+        save("complete")
+        source.unlink(missing_ok=True)
+    except JobCancelled:
+        manifest.update(status="cancelled", error=None)
+        save("cancelled")
+    except Exception as exc:
+        manifest.update(status="failed", error=f"{type(exc).__name__}: {exc}")
+        save("failed")
