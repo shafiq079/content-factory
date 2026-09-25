@@ -30,7 +30,7 @@ With Ollama selected, the pipeline first retrieves up to three Wikipedia introdu
 
 1. Install and configure the [official LTX-2 repository](https://github.com/Lightricks/LTX-2) and its 2.5 distilled pipeline. Download the model files listed in its current README. The weights are large; the official ComfyUI workflow recommends CUDA with **32 GB+ VRAM and 100 GB+ disk**; this is a planning estimate, not a proven minimum for our Python configuration. Lower memory can sometimes use quantization/offload; test your own GPU before budgeting.
 2. Install `backend/requirements-ai.txt` in an environment compatible with LTX's Torch/CUDA stack, `espeak-ng` for Kokoro pronunciation fallback, and the official `ltx_pipelines` package. LTX's official repo uses `uv sync --extra natten`; run the backend in that environment or expose the installed module to its Python interpreter.
-3. Copy `backend/ltx-models.example.json` to a private absolute path and fill in paths to all five LTX 2.5 split checkpoints. Set `LTX_CONFIG` to that JSON file's absolute path. The model itself is invoked with `python -m ltx_pipelines.distilled` using the documented split checkpoint arguments. Model/checkpoint versions must agree. Start with smaller generations on GPU; 1080×1920 output is the render target and LTX inference at this size may exhaust VRAM. The app currently requests a nearby multiple-of-64 LTX resolution.
+3. Copy `backend/ltx-models.example.json` to a private absolute path and fill in paths to all five LTX 2.5 split checkpoints. Set `LTX_CONFIG` to that JSON file's absolute path. The backend now loads the official Python `DistilledPipeline` directly and keeps that model runtime alive inside the worker, so all scenes in a project — and later jobs using the same checkpoint set — reuse the loaded model instead of starting a new Python process for every clip. Model/checkpoint versions must agree. `LTX_SEED` optionally sets the base seed (default `42`; each scene offsets it by scene ID). Start with smaller generations on GPU; 1080×1920 output is the render target and LTX inference at this size may exhaust VRAM. The app currently requests a nearby multiple-of-64 LTX resolution.
 4. Install and start [Ollama](https://github.com/ollama/ollama) and pull a JSON-capable model. Set `OLLAMA_MODEL` and optionally `OLLAMA_URL` (local service only). Set `CAPTION_PROVIDER=whisper` to transcribe Kokoro output with faster-whisper; optionally set `WHISPER_MODEL=small`, `WHISPER_DEVICE=cpu`, `WHISPER_COMPUTE=int8`. Kokoro's configured voice is controlled with `KOKORO_VOICE`, default `af_heart` in English. Other voices/languages should be checked against the official Kokoro model before use.
 5. In the UI choose **Ollama**, **LTX 2.5**, **Kokoro**. Before a project is queued, the backend checks the selected providers, their local dependencies and checkpoint paths, and the Ollama model. Missing setup returns a descriptive HTTP 422 error; no fake video is silently substituted.
 
@@ -45,7 +45,7 @@ The server stores projects on disk and uses a SQLite job queue in the project di
 ## Scope and present limitations
 
 - The template planner is a deterministic test fixture. Wikipedia introduction excerpts offer a limited initial research source; they may be incomplete or unsuitable for a topic. Ollama uses these notes but does not independently verify factual claims or validate whether each narration sentence is fully supported.
-- The first real video provider is LTX 2.5 distilled. Its own native audio is discarded during final assembly in favor of dedicated narration; native synchronized effects are a later routing choice. Clips can still loop after normalization when actual model output is shorter than the measured narration.
+- The first real video provider is LTX 2.5 distilled. Each raw LTX scene file keeps the model's synchronized native audio track, but the current final assembly deliberately uses dedicated narration instead. Scene-level `native` / `narration` / `hybrid` audio routing is the next audio milestone. Clips can still loop after normalization when actual model output is shorter than the measured narration.
 - Without `CAPTION_PROVIDER=whisper`, caption timing is estimated from the script and distributed evenly across each scene. Whisper mode transcribes generated voice with word timestamps but does not guarantee perfect forced alignment; review captions before publishing.
 - The UI edits visual prompts and offers three caption styling presets. Music, sound effects, transitions beyond cuts, asset replacement and Wan are future additions.
 - Generated footage has **not** been verified in this workspace because it has no NVIDIA GPU, official checkpoint files or Ollama/Kokoro installations. Only the preview mode was run end to end.
@@ -65,10 +65,10 @@ Official references: [LTX-2 inference and model paths](https://github.com/Lightr
 
 ## Next engineering milestones
 
-1. Add voice controls, music and effects through modular adapters; these can be developed without a GPU.
-2. Expand research beyond encyclopedia summaries and review scene citations before publishing factual claims.
-3. Validate LTX on a GPU host when available; record VRAM, runtime and output dimensions, then tune resolution and run a multi-scene real audio/video project.
-4. Add a Wan provider and a scene-level choice based on hardware, look and license; add moderation/review and public deployment controls if needed.
+1. Validate the persistent in-process LTX runtime on a GPU host; record one-time model load cost, per-scene runtime, VRAM and output dimensions, then run a multi-scene real project.
+2. Add scene-level `narration`, `native` and `hybrid` audio routing so LTX ambience/effects can be preserved when useful while Kokoro remains the consistent narrator.
+3. Add LTX 2.5 DFR as the slower production-quality mode while keeping Distilled as the fast generation mode.
+4. Add voice controls, music/effects adapters and then a Wan provider; expand research and public-deployment controls after the core generation path is proven.
 
 ## GitHub development
 
