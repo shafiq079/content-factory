@@ -29,18 +29,9 @@ def dependency(name: str) -> None:
 
 
 def ltx_check(_: core.Request) -> None:
-    config = Path(os.getenv("LTX_CONFIG", "ltx-models.json"))
-    if not config.is_file():
-        raise RuntimeError(f"LTX_CONFIG missing: {config}. See ltx-models.example.json")
-    try:
-        paths = json.loads(config.read_text(encoding="utf-8"))
-        for name in core.LTX25Video.KEYS:
-            path = Path(paths[name]).expanduser().resolve()
-            if not path.is_file():
-                raise RuntimeError(f"Missing LTX checkpoint: {name}: {path}")
-    except (ValueError, KeyError) as exc:
-        raise RuntimeError(f"Invalid LTX_CONFIG: {exc}") from exc
+    core.LTX25Video.configured_paths()
     dependency("ltx_pipelines")
+    dependency("ltx_core")
 
 
 def kokoro_check(request: core.Request) -> None:
