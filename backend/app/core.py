@@ -350,7 +350,8 @@ def render(project_dir: Path, manifest: dict) -> None:
             if mode == "hybrid" and media.has_audio(clip):
                 mix = (f"[0:a]volume={native_volume}[native];"
                        "[1:a]volume=1.0[narration];"
-                       "[native][narration]amix=inputs=2:duration=longest:dropout_transition=0[aout]")
+                       "[native][narration]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0,"
+                       "alimiter=limit=0.95[aout]")
                 run("ffmpeg", "-y", "-stream_loop", "-1", "-i", str(clip), "-i", str(voice_file),
                     "-filter_complex", mix, "-vf", scale, "-map", "0:v:0", "-map", "[aout]",
                     "-t", str(s["duration"]), "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
