@@ -6,7 +6,7 @@ import math
 import os
 import re
 import subprocess
-import sys
+import threading
 import urllib.request
 import uuid
 from abc import ABC, abstractmethod
@@ -150,28 +150,96 @@ class PreviewVideo(VideoGenerator):
 
 
 class LTX25Video(VideoGenerator):
-    """Invokes official ltx_pipelines.distilled on a separately configured GPU host."""
-    KEYS = {"transformer": "--transformer-path", "text_encoder": "--text-encoder-path", "video_vae": "--video-vae-path", "audio_vae": "--audio-vae-path", "upscaler": "--spatial-upsampler-path"}
+    """Reuse the official LTX 2.5 DistilledPipeline in-process across scene generations."""
 
-    def generate(self, scene: dict, output: Path, request: Request) -> None:
-        config = Path(os.getenv("LTX_CONFIG", "ltx-models.json"))
+    KEYS = ("transformer", "text_encoder", "video_vae", "audio_vae", "upscaler")
+    _runtime = None
+    _runtime_key: tuple[str, ...] | None = None
+    _runtime_lock = threading.Lock()
+    _inference_lock = threading.Lock()
+
+    @classmethod
+    def configured_paths(cls) -> dict[str, Path]:
+        config = Path(os.getenv("LTX_CONFIG", "ltx-models.json")).expanduser().resolve()
         if not config.is_file():
             raise RuntimeError(f"LTX_CONFIG missing: {config}. See ltx-models.example.json")
-        paths = json.loads(config.read_text())
-        args = [sys.executable, "-m", "ltx_pipelines.distilled"]
-        for name, flag in self.KEYS.items():
-            path = Path(paths[name]).expanduser().resolve()
+        try:
+            raw = json.loads(config.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise RuntimeError(f"Invalid LTX_CONFIG: {exc}") from exc
+
+        paths: dict[str, Path] = {}
+        for name in cls.KEYS:
+            try:
+                path = Path(raw[name]).expanduser().resolve()
+            except (KeyError, TypeError) as exc:
+                raise RuntimeError(f"Invalid LTX_CONFIG: missing or invalid '{name}'") from exc
             if not path.is_file():
                 raise RuntimeError(f"Missing LTX checkpoint: {name}: {path}")
-            args += [flag, str(path)]
+            paths[name] = path
+        return paths
+
+    @staticmethod
+    def _build_runtime(paths: dict[str, Path]):
+        # Imports stay lazy so the CPU preview and CI do not require the GPU stack.
+        from ltx_core.model.video_vae import get_video_chunks_number
+        from ltx_pipelines.distilled import DistilledPipeline
+        from ltx_pipelines.utils.media_io import encode_video
+        from ltx_pipelines.utils.model_paths import ModelPaths
+
+        model_paths = ModelPaths.from_split(
+            transformer_path=str(paths["transformer"]),
+            text_encoder_path=str(paths["text_encoder"]),
+            video_vae_path=str(paths["video_vae"]),
+            audio_vae_path=str(paths["audio_vae"]),
+        )
+        pipeline = DistilledPipeline(
+            model_paths=model_paths,
+            spatial_upsampler_path=str(paths["upscaler"]),
+            loras=[],
+        )
+        return pipeline, encode_video, get_video_chunks_number
+
+    @classmethod
+    def _runtime_for(cls, paths: dict[str, Path]):
+        key = tuple(str(paths[name]) for name in cls.KEYS)
+        with cls._runtime_lock:
+            if cls._runtime is None or cls._runtime_key != key:
+                cls._runtime = cls._build_runtime(paths)
+                cls._runtime_key = key
+            return cls._runtime
+
+    def generate(self, scene: dict, output: Path, request: Request) -> None:
+        paths = self.configured_paths()
+        pipeline, encode_video, get_video_chunks_number = self._runtime_for(paths)
         fps = 24
         frames = max(9, int(scene["duration"] * fps / 8) * 8 + 1)
-        args += ["--prompt", scene["visual_prompt"], "--height", str(math.ceil(request.height/64)*64),
-                 "--width", str(math.ceil(request.width/64)*64), "--num-frames", str(frames),
-                 "--frame-rate", str(fps), "--output-path", str(output)]
-        subprocess.run(args, check=True, timeout=3600)
+        height = math.ceil(request.height / 64) * 64
+        width = math.ceil(request.width / 64) * 64
+        seed = int(os.getenv("LTX_SEED", "42")) + int(scene["id"]) - 1
+
+        # The worker currently processes one job at a time. Keep an explicit lock so a
+        # future concurrent caller cannot run two generations through one GPU model.
+        with self._inference_lock:
+            result = pipeline(
+                prompt=scene["visual_prompt"],
+                seed=seed,
+                height=height,
+                width=width,
+                frame_rate=fps,
+                images=[],
+                num_frames=frames,
+            )
+            encode_video(
+                video=result.video,
+                fps=fps,
+                audio=result.audio,
+                output_path=str(output),
+                video_chunks_number=get_video_chunks_number(result.num_frames, result.tiling_config),
+            )
+
         if not output.is_file():
-            raise RuntimeError("LTX command exited without a video")
+            raise RuntimeError("LTX pipeline completed without a video")
 
 
 class VoiceGenerator(ABC):
