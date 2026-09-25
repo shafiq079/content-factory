@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Callable
 from urllib.parse import urlparse
 
-from . import core
+from . import core, research
 
 
 @dataclass(frozen=True)
@@ -70,6 +70,7 @@ def whisper_check(_: core.Request) -> None:
 
 
 REGISTRY: dict[str, dict[str, Adapter]] = {
+    "research": {"none": Adapter(research.NoResearch, ready), "wikipedia": Adapter(research.WikipediaResearch, ready)},
     "planner": {"template": Adapter(core.TemplatePlanner, ready), "ollama": Adapter(core.OllamaPlanner, ollama_check)},
     "video": {"preview": Adapter(core.PreviewVideo, ready), "ltx25": Adapter(core.LTX25Video, ltx_check)},
     "voice": {"silent": Adapter(core.SilentVoice, ready), "kokoro": Adapter(core.KokoroVoice, kokoro_check)},
@@ -77,12 +78,18 @@ REGISTRY: dict[str, dict[str, Adapter]] = {
 }
 
 
+def research_choice(request: core.Request) -> str:
+    if request.research_provider == "auto":
+        return "wikipedia" if request.planner_provider == "ollama" else "none"
+    return request.research_provider
+
+
 def caption_choice(request: core.Request) -> str:
     return "whisper" if request.voice_provider == "kokoro" and os.getenv("CAPTION_PROVIDER") == "whisper" else "script"
 
 
 def preflight(request: core.Request) -> None:
-    selections = {"planner": request.planner_provider, "video": request.video_provider,
+    selections = {"research": research_choice(request), "planner": request.planner_provider, "video": request.video_provider,
                   "voice": request.voice_provider, "captions": caption_choice(request)}
     for kind, name in selections.items():
         try:

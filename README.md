@@ -24,6 +24,8 @@ npm run dev
 
 Open `http://localhost:3000`. Default settings run the **preview**: deterministic scene plan, simple non-AI colored test clips, silent WAVs, estimated script captions and FFmpeg render. It produces a playable MP4 and editable assets, but is not a content-quality demo. The backend API is at `http://127.0.0.1:8000/docs`.
 
+With Ollama selected, the pipeline first retrieves up to three Wikipedia introduction excerpts, saves their page links in the timeline, then asks the local AI director for a narrative angle and timed scenes. The first scene narration is the hook; the full script is assembled from the exact scene narration, so captions and script stay in sync. The director attaches page IDs to scenes it drew from. The UI shows the research notes and script for review. Wikipedia excerpts are shortened and attributed by link to each article; their text is under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/). This is source context, **not automatic fact checking**: check claims and source fit before publishing. Choose **No external research** for fiction or topics without encyclopedia coverage. Template preview has no factual research.
+
 ## Real model setup on your GPU machine
 
 1. Install and configure the [official LTX-2 repository](https://github.com/Lightricks/LTX-2) and its 2.5 distilled pipeline. Download the model files listed in its current README. The weights are large; the official ComfyUI workflow recommends CUDA with **32 GB+ VRAM and 100 GB+ disk**; this is a planning estimate, not a proven minimum for our Python configuration. Lower memory can sometimes use quantization/offload; test your own GPU before budgeting.
@@ -34,7 +36,7 @@ Open `http://localhost:3000`. Default settings run the **preview**: deterministi
 
 ## Editable output and behavior
 
-Each project lives in `content-factory/projects/<uuid>/`: `timeline.json` (the canonical timeline), `clips/`, `voice/`, `captions.srt`, `final.mp4`, and intermediate `work/` files. If `opentimelineio` is installed, `timeline.otio` is also written. Timeline JSON contains request settings, scene prompts, narration, duration, start times, asset paths, state and error. Schema version 2 is validated when loaded; original unversioned manifests are upgraded in place and unknown future versions are rejected. The OTIO file is an interchange export, not the source of truth. Editor compatibility depends on the editor and available adapters.
+Each project lives in `content-factory/projects/<uuid>/`: `timeline.json` (the canonical timeline), `clips/`, `voice/`, `captions.srt`, `final.mp4`, and intermediate `work/` files. If `opentimelineio` is installed, `timeline.otio` is also written. Timeline JSON contains request settings, research excerpts and URLs, idea, hook, full script, scene prompts, narration, source IDs, duration, start times, asset paths, state and error. Schema version 2 is validated when loaded; original unversioned manifests are upgraded in place and unknown future versions are rejected. The OTIO file is an interchange export, not the source of truth. Editor compatibility depends on the editor and available adapters.
 
 Click **Regenerate scene** after editing its prompt. That regenerates one clip and its voice, recalculates subsequent start times/captions, and rerenders the final video. At present changing an entire project's voice or caption style requires editing project JSON and a future rerender endpoint. An error in one scene leaves intermediate files available for inspection.
 
@@ -42,7 +44,7 @@ The server stores projects on disk and uses a SQLite job queue in the project di
 
 ## Scope and present limitations
 
-- The template planner is a deterministic test fixture. Ollama creates structured scenes but does not retrieve current sources or verify claims; topics needing research need an explicit cited retrieval step.
+- The template planner is a deterministic test fixture. Wikipedia introduction excerpts offer a limited initial research source; they may be incomplete or unsuitable for a topic. Ollama uses these notes but does not independently verify factual claims or validate whether each narration sentence is fully supported.
 - The first real video provider is LTX 2.5 distilled. Its own native audio is discarded during final assembly in favor of dedicated narration; native synchronized effects are a later routing choice. Long narration may make a short generated clip loop.
 - Without `CAPTION_PROVIDER=whisper`, caption timing is estimated from the script and distributed evenly across each scene. Whisper mode transcribes generated voice with word timestamps but does not guarantee perfect forced alignment; review captions before publishing.
 - The UI edits visual prompts only. Music, sound effects, transitions beyond cuts, caption styling presets, asset replacement and Wan are future additions.
@@ -63,10 +65,10 @@ Official references: [LTX-2 inference and model paths](https://github.com/Lightr
 
 ## Next engineering milestones
 
-1. Run one scene on a selected GPU host, record VRAM/runtime and output dimensions, then tune resolution/quantization and model path setup.
-2. Run a multi-scene real audio/video project; measure narration durations before requesting each clip and review caption accuracy/visual matching.
-3. Add a Wan provider and a scene-level choice based on hardware, look and license; add a source-backed research stage for factual videos.
-4. Add a render-only endpoint, sound design, moderation/review and public deployment controls if needed.
+1. Make narration and scene timing more reliable and add render-only editing, caption style, music and effects through modular adapters; these can be developed without a GPU.
+2. Expand research beyond encyclopedia summaries and review scene citations before publishing factual claims.
+3. Validate LTX on a GPU host when available; record VRAM, runtime and output dimensions, then tune resolution and run a multi-scene real audio/video project.
+4. Add a Wan provider and a scene-level choice based on hardware, look and license; add moderation/review and public deployment controls if needed.
 
 ## GitHub development
 
