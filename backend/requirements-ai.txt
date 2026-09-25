@@ -1,0 +1,6 @@
+# Install separately on a machine with suitable model hardware.
+kokoro>=0.9.4,<1
+soundfile>=0.12,<1
+faster-whisper>=1.1,<2
+opentimelineio>=0.17,<1
+
