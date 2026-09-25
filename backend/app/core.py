@@ -335,15 +335,13 @@ def render(project_dir: Path, manifest: dict) -> None:
         target.parent.mkdir(exist_ok=True)
         clip = project_dir / s["clip"]
         mode = s.get("audio_mode", "narration")
-        common = ["-vf", scale, "-map", "0:v:0", "-t", str(s["duration"]),
-                  "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
-                  "-c:a", "aac", "-ar", "48000", "-ac", "2"]
-
         if mode == "native":
             if not media.has_audio(clip):
                 raise media.MediaValidationError(f"Native audio requested but scene {s['id']} clip has no audio")
             run("ffmpeg", "-y", "-stream_loop", "-1", "-i", str(clip),
-                *common[:3], "0:a:0", *common[3:], str(target))
+                "-vf", scale, "-map", "0:v:0", "-map", "0:a:0", "-t", str(s["duration"]),
+                "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+                "-c:a", "aac", "-ar", "48000", "-ac", "2", str(target))
         else:
             voice_path = s.get("voice")
             if not voice_path:
