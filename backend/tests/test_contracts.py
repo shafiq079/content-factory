@@ -54,7 +54,7 @@ def test_fake_invalid_audio_and_retry(monkeypatch, tmp_path: Path):
         failed = wait_for_completion(client, project_id)
         assert failed["status"] == "failed"
         assert "Cannot probe" in failed["error"]
-        assert (tmp_path / project_id / "clips/scene-01.mp4").exists()
+        assert not (tmp_path / project_id / "clips/scene-01.mp4").exists()
         monkeypatch.setitem(providers.REGISTRY["voice"], "silent", original)
         assert client.post(f"/projects/{project_id}/retry").status_code == 202
         recovered = wait_for_completion(client, project_id)

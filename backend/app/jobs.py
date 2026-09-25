@@ -71,8 +71,9 @@ class JobStore:
                 manifest["script"] = " ".join(s["narration"] for s in manifest["scenes"])
                 manifest["hook"] = manifest["scenes"][0]["narration"]
             scene["status"] = "pending"
-            for asset in ("clip", "voice"):
-                (core.project_path(project_id) / scene[asset]).unlink(missing_ok=True)
+            (core.project_path(project_id) / scene["clip"]).unlink(missing_ok=True)
+            if narration is not None:
+                (core.project_path(project_id) / scene["voice"]).unlink(missing_ok=True)
             manifest.update(status="queued", stage=f"queued to regenerate scene {scene_id}", error=None)
             core.atomic_write(core.project_path(project_id) / "timeline.json", manifest)
             db.execute("""INSERT INTO jobs(project_id,kind,scene_id,state,updated_at)
