@@ -58,6 +58,7 @@ def get_project(project_id: str):
 class SceneEdit(BaseModel):
     visual_prompt: str | None = Field(None, min_length=3, max_length=3000)
     narration: str | None = Field(None, min_length=2, max_length=2000)
+    audio_mode: Literal["narration", "native", "hybrid"] | None = None
 
 
 class RenderEdit(BaseModel):
@@ -68,7 +69,7 @@ class RenderEdit(BaseModel):
 def regenerate_scene(project_id: str, scene_id: int, edit: SceneEdit):
     try:
         providers.preflight(Request.model_validate(load(project_id)["request"]))
-        return app.state.jobs.enqueue_regeneration(project_id, scene_id, edit.visual_prompt, edit.narration)
+        return app.state.jobs.enqueue_regeneration(project_id, scene_id, edit.visual_prompt, edit.narration, edit.audio_mode)
     except (ValueError, FileNotFoundError):
         raise HTTPException(404, "Project or scene not found")
     except RuntimeError as exc:

@@ -60,6 +60,12 @@ def stream(data: dict, kind: str) -> dict:
     return match
 
 
+def has_audio(path: Path) -> bool:
+    """Return whether a valid media file contains an audio stream."""
+    data = inspect(path)
+    return any(item.get("codec_type") == "audio" for item in data.get("streams", []))
+
+
 def validate_clip(path: Path, seconds: float) -> VideoAsset:
     data = inspect(path)
     video = stream(data, "video")

@@ -52,7 +52,8 @@ class JobStore:
             db.execute("INSERT INTO jobs(project_id,kind,state,updated_at) VALUES(?,?,?,?)",
                        (project_id, "generate", "queued", time.time()))
 
-    def enqueue_regeneration(self, project_id: str, scene_id: int, visual_prompt: str | None, narration: str | None) -> dict:
+    def enqueue_regeneration(self, project_id: str, scene_id: int, visual_prompt: str | None,
+                             narration: str | None, audio_mode: str | None = None) -> dict:
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             row = db.execute("SELECT state FROM jobs WHERE project_id=?", (project_id,)).fetchone()
@@ -64,16 +65,23 @@ class JobStore:
             scene = next((s for s in manifest["scenes"] if s["id"] == scene_id), None)
             if scene is None:
                 raise ValueError("Unknown scene")
+            if audio_mode is not None and audio_mode not in ("narration", "native", "hybrid"):
+                raise ValueError("Unknown audio mode")
+            old_voice = scene.get("voice")
             if visual_prompt is not None:
                 scene["visual_prompt"] = visual_prompt
             if narration is not None:
                 scene["narration"] = narration
                 manifest["script"] = " ".join(s["narration"] for s in manifest["scenes"])
                 manifest["hook"] = manifest["scenes"][0]["narration"]
+            if audio_mode is not None:
+                scene["audio_mode"] = audio_mode
+                if audio_mode == "native":
+                    scene["voice"] = None
             scene["status"] = "pending"
             (core.project_path(project_id) / scene["clip"]).unlink(missing_ok=True)
-            if narration is not None:
-                (core.project_path(project_id) / scene["voice"]).unlink(missing_ok=True)
+            if (narration is not None or audio_mode is not None) and old_voice:
+                (core.project_path(project_id) / old_voice).unlink(missing_ok=True)
             manifest.update(status="queued", stage=f"queued to regenerate scene {scene_id}", error=None)
             core.atomic_write(core.project_path(project_id) / "timeline.json", manifest)
             db.execute("""INSERT INTO jobs(project_id,kind,scene_id,state,updated_at)
