@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
 import threading
+from typing import Literal
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -59,6 +60,10 @@ class SceneEdit(BaseModel):
     narration: str | None = Field(None, min_length=2, max_length=2000)
 
 
+class RenderEdit(BaseModel):
+    caption_style: Literal["classic", "bold", "minimal"] = "classic"
+
+
 @app.post("/projects/{project_id}/scenes/{scene_id}/regenerate", status_code=202)
 def regenerate_scene(project_id: str, scene_id: int, edit: SceneEdit):
     try:
@@ -68,6 +73,16 @@ def regenerate_scene(project_id: str, scene_id: int, edit: SceneEdit):
         raise HTTPException(404, "Project or scene not found")
     except RuntimeError as exc:
         raise HTTPException(409, str(exc))
+
+
+@app.post("/projects/{project_id}/render", status_code=202)
+def render_project(project_id: str, edit: RenderEdit):
+    try:
+        return app.state.jobs.enqueue_render(project_id, edit.caption_style)
+    except (ValueError, FileNotFoundError):
+        raise HTTPException(404, "Project not found")
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 
 @app.post("/projects/{project_id}/cancel", status_code=202)

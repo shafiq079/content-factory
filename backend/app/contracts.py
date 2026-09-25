@@ -40,6 +40,7 @@ class Timeline(BaseModel):
     assets: dict[str, str]
     error: str | None
     revision: int = Field(ge=0)
+    caption_style: Literal["classic", "bold", "minimal"] = "classic"
     research: list[Source] = Field(default_factory=list)
     idea: str = ""
     hook: str = ""

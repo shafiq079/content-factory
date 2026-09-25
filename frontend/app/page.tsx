@@ -2,9 +2,10 @@
 import { useEffect, useState } from 'react';
 
 const API = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000';
+type CaptionStyle = 'classic' | 'bold' | 'minimal';
 type Scene = {id:number; narration:string; visual_prompt:string; duration:number; status:string; clip?:string; source_ids?:number[]};
 type Source = {id:number; title:string; url:string; excerpt:string};
-type Project = {id:string; status:string; stage:string; error?:string; revision?:number; scenes:Scene[]; assets:Record<string,string>; idea?:string; hook?:string; script?:string; research?:Source[]; request:{video_provider:string; voice_provider:string; planner_provider:string}};
+type Project = {id:string; status:string; stage:string; error?:string; revision?:number; caption_style?:CaptionStyle; scenes:Scene[]; assets:Record<string,string>; idea?:string; hook?:string; script?:string; research?:Source[]; request:{video_provider:string; voice_provider:string; planner_provider:string}};
 
 export default function Home() {
   const [topic, setTopic] = useState('Black holes');
@@ -20,6 +21,7 @@ export default function Home() {
   const [project, setProject] = useState<Project | null>(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [captionStyle, setCaptionStyle] = useState<CaptionStyle | null>(null);
   const [edit, setEdit] = useState<Record<number, string>>({});
   useEffect(() => {
     if (!id) return;
@@ -61,6 +63,15 @@ export default function Home() {
       setProject(await res.json());
     } catch(e) { setError(String(e)); }
   }
+  async function renderAgain() {
+    if (!id || !project) return;
+    setError('');
+    try {
+      const res = await fetch(`${API}/projects/${id}/render`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({caption_style:captionStyle ?? project.caption_style ?? 'classic'})});
+      if (!res.ok) throw new Error(await res.text());
+      setProject(await res.json()); setCaptionStyle(null);
+    } catch(e) { setError(String(e)); }
+  }
   useEffect(() => { const query = new URLSearchParams(window.location.search).get('project'); if (query) setId(query); }, []);
   const asset = (path:string) => `${API}/projects/${id}/assets/${path}`;
   return <main>
@@ -81,7 +92,7 @@ export default function Home() {
         {(project.status==='queued' || project.status==='running') && <button className="secondary" onClick={()=>jobAction('cancel')}>Cancel job</button>}
         {(project.status==='failed' || project.status==='cancelled') && <button className="secondary" onClick={()=>jobAction('retry')}>Retry job</button>}
         {project.error && <p className="error">{project.error}</p>}
-        {project.status==='complete' && <><video controls src={asset('final.mp4')+`?v=${project.revision??0}`} playsInline /><div className="links"><a href={asset('final.mp4')}>Final MP4</a><a href={asset('timeline.json')}>Timeline JSON</a><a href={asset('captions.srt')}>Captions SRT</a></div></>}
+        {project.status==='complete' && <><video controls src={asset('final.mp4')+`?v=${project.revision??0}`} playsInline /><div className="links"><a href={asset('final.mp4')}>Final MP4</a><a href={asset('timeline.json')}>Timeline JSON</a><a href={asset('captions.srt')}>Captions SRT</a></div><label>Caption style<select value={captionStyle ?? project.caption_style ?? 'classic'} onChange={e=>setCaptionStyle(e.target.value as CaptionStyle)}><option value="classic">Classic</option><option value="bold">Bold</option><option value="minimal">Minimal</option></select></label><button className="secondary" onClick={renderAgain}>Render again with saved scenes</button></>}
         {project.script && <div className="story"><h3>Idea and script</h3><p><strong>{project.idea}</strong></p><p>{project.script}</p></div>}
         {!!project.research?.length && <div className="story"><h3>Research notes</h3><p className="note">Shortened Wikipedia excerpts. Source links credit contributors; text is under <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>. Review claims before publishing.</p>{project.research.map(source=><p key={source.id}><a href={source.url} target="_blank" rel="noopener noreferrer">{source.title} ↗</a><br/>{source.excerpt}</p>)}</div>}
         <div className="scenes">{project.scenes.map(s=><article key={s.id}><div className="scene-heading"><strong>Scene {s.id}</strong><small>{s.duration.toFixed(1)}s · {s.status}</small></div><p>{s.narration}</p>{!!s.source_ids?.length && <div className="links">Sources: {s.source_ids.map(sourceId=>{const source=project.research?.find(item=>item.id===sourceId);return source && <a key={sourceId} href={source.url} target="_blank" rel="noopener noreferrer">{source.title} ↗</a>;})}</div>}<textarea aria-label={`Scene ${s.id} visual prompt`} value={edit[s.id]??s.visual_prompt} onChange={e=>setEdit({...edit,[s.id]:e.target.value})} rows={3}/>{s.clip && <a href={asset(s.clip)}>View clip ↗</a>}{project.status==='complete' && <button className="secondary" onClick={()=>redo(s)}>Regenerate scene</button>}</article>)}</div>

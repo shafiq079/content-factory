@@ -22,6 +22,12 @@ from .research import Source
 ROOT = Path(os.getenv("PROJECTS_DIR", Path(__file__).resolve().parents[2] / "projects")).resolve()
 ROOT.mkdir(parents=True, exist_ok=True)
 
+CAPTION_STYLES = {
+    "classic": "FontSize=15,Alignment=2,MarginV=125,Outline=2",
+    "bold": "FontSize=21,Bold=1,Alignment=2,MarginV=110,Outline=3",
+    "minimal": "FontSize=14,Alignment=2,MarginV=100,Outline=1",
+}
+
 
 class Request(BaseModel):
     topic: str = Field(min_length=3, max_length=300)
@@ -245,7 +251,8 @@ def render(project_dir: Path, manifest: dict) -> None:
     raw = project_dir / "work" / "joined.mp4"
     run("ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(list_file), "-c", "copy", str(raw))
     # Make SRT subtitle path safe in ffmpeg's filtergraph by running in project cwd.
-    subprocess.run(["ffmpeg", "-y", "-i", str(raw), "-vf", "subtitles=captions.srt:force_style='FontSize=15,Alignment=2,MarginV=125,Outline=2'",
+    style = CAPTION_STYLES[manifest.get("caption_style", "classic")]
+    subprocess.run(["ffmpeg", "-y", "-i", str(raw), "-vf", f"subtitles=captions.srt:force_style='{style}'",
                     "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-c:a", "copy", "-movflags", "+faststart", "final.partial.mp4"],
                    check=True, cwd=project_dir, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=3600)
     media.validate_final(project_dir / "final.partial.mp4", req.width, req.height, sum(s["duration"] for s in manifest["scenes"]))
@@ -291,7 +298,7 @@ def create(request: Request) -> dict:
     folder = ROOT / project_id
     folder.mkdir()
     manifest = {"schema_version": contracts.SCHEMA_VERSION, "id": project_id, "request": request.model_dump(), "status": "queued", "stage": "queued", "scenes": [], "assets": {}, "error": None, "revision": 0,
-                "research": [], "idea": "", "hook": "", "script": ""}
+                "research": [], "idea": "", "hook": "", "script": "", "caption_style": "classic"}
     atomic_write(folder / "timeline.json", manifest)
     return manifest
 
@@ -450,3 +457,40 @@ def regenerate_work(project_id: str, scene_id: int, is_cancelled: Callable[[], b
     except Exception as exc:
         manifest.update(status="failed", stage="failed", error=f"{type(exc).__name__}: {exc}")
     atomic_write(folder / "timeline.json", manifest)
+
+
+def render_work(project_id: str, is_cancelled: Callable[[], bool] = lambda: False) -> None:
+    """Rebuild the final MP4 from existing project assets; never call a model."""
+    folder = project_path(project_id)
+    manifest = load(project_id)
+    if manifest["status"] == "complete" and (folder / "final.mp4").is_file():
+        return
+    req = Request.model_validate(manifest["request"])
+
+    def save(stage: str) -> None:
+        manifest["stage"] = stage
+        atomic_write(folder / "timeline.json", manifest)
+
+    try:
+        if is_cancelled():
+            raise JobCancelled("Cancellation requested")
+        manifest.update(status="running", error=None)
+        save("checking saved scenes")
+        for scene in manifest["scenes"]:
+            media.validate_clip(folder / scene["clip"], scene["duration"])
+            media.validate_voice(folder / scene["voice"], scene.get("planned_duration") or scene["duration"],
+                                 req.voice_provider == "silent")
+        media.validate_captions(folder / "captions.srt", sum(s["duration"] for s in manifest["scenes"]))
+        if is_cancelled():
+            raise JobCancelled("Cancellation requested")
+        save("rendering existing scenes")
+        render(folder, manifest)
+        manifest["revision"] += 1
+        manifest.update(status="complete", error=None)
+        save("complete")
+    except JobCancelled:
+        manifest.update(status="cancelled", error=None)
+        save("cancelled")
+    except Exception as exc:
+        manifest.update(status="failed", error=f"{type(exc).__name__}: {exc}")
+        save("failed")
