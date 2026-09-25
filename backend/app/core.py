@@ -69,11 +69,6 @@ def run(*args: str) -> None:
     subprocess.run(list(args), check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=3600)
 
 
-def probe_duration(path: Path) -> float:
-    p = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=nokey=1:noprint_wrappers=1", str(path)], check=True, capture_output=True, text=True)
-    return float(p.stdout.strip())
-
-
 def atomic_write(path: Path, obj: dict) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(obj, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -305,6 +300,48 @@ class JobCancelled(Exception):
     pass
 
 
+def ensure_scene_media(folder: Path, manifest: dict, scene: dict, req: Request,
+                       video: VideoGenerator, voice: VoiceGenerator,
+                       check: Callable[[], None], save: Callable[[str], None]) -> None:
+    """Measure narration first; generate or reuse footage at its actual duration."""
+    if scene.get("planned_duration") is None:
+        scene["planned_duration"] = scene["duration"]
+    target = scene["planned_duration"]
+    clip, audio = folder / scene["clip"], folder / scene["voice"]
+    check()
+    measured = None
+    if audio.is_file():
+        try:
+            measured = media.validate_voice(audio, target, req.voice_provider == "silent")
+        except media.MediaValidationError:
+            audio.unlink()
+    if not audio.is_file():
+        save(f"voicing scene {scene['id']}/{len(manifest['scenes'])}")
+        partial = audio.with_name(audio.stem + ".partial.wav")
+        partial.unlink(missing_ok=True)
+        voice.generate(scene["narration"], partial, target, req.language)
+        measured = media.validate_voice(partial, target, req.voice_provider == "silent")
+        partial.replace(audio)
+    if measured is None:
+        raise RuntimeError(f"Narration was not produced for scene {scene['id']}")
+    scene["duration"] = round(measured.duration, 3) if req.voice_provider == "kokoro" else target
+    save(f"narration timed for scene {scene['id']}/{len(manifest['scenes'])}")
+    check()
+    if clip.is_file():
+        try:
+            media.validate_clip(clip, scene["duration"])
+        except media.MediaValidationError:
+            clip.unlink()
+    if not clip.is_file():
+        save(f"generating scene {scene['id']}/{len(manifest['scenes'])}")
+        partial = clip.with_name(clip.stem + ".partial.mp4")
+        partial.unlink(missing_ok=True)
+        video.generate(scene, partial, req)
+        media.validate_clip(partial, scene["duration"])
+        partial.replace(clip)
+    scene["status"] = "ready"
+
+
 def process(project_id: str, is_cancelled: Callable[[], bool] = lambda: False) -> None:
     from . import providers
 
@@ -349,35 +386,7 @@ def process(project_id: str, is_cancelled: Callable[[], bool] = lambda: False) -
             scene["start"] = round(start, 3)
             scene["clip"] = f"clips/scene-{scene['id']:02d}.mp4"
             scene["voice"] = f"voice/scene-{scene['id']:02d}.wav"
-            clip, audio = folder / scene["clip"], folder / scene["voice"]
-            if clip.is_file():
-                try:
-                    media.validate_clip(clip, scene["duration"])
-                except media.MediaValidationError:
-                    clip.unlink()
-            if not clip.is_file():
-                save(f"generating scene {scene['id']}/{len(scenes)}")
-                partial = clip.with_name(clip.stem + ".partial.mp4")
-                partial.unlink(missing_ok=True)
-                video.generate(scene, partial, req)
-                media.validate_clip(partial, scene["duration"])
-                partial.replace(clip)
-            check()
-            if audio.is_file():
-                try:
-                    media.validate_voice(audio, scene["duration"], req.voice_provider == "silent")
-                except media.MediaValidationError:
-                    audio.unlink()
-            if not audio.is_file():
-                save(f"voicing scene {scene['id']}/{len(scenes)}")
-                partial = audio.with_name(audio.stem + ".partial.wav")
-                partial.unlink(missing_ok=True)
-                voice.generate(scene["narration"], partial, scene["duration"], req.language)
-                media.validate_voice(partial, scene["duration"], req.voice_provider == "silent")
-                partial.replace(audio)
-            if req.voice_provider == "kokoro" and scene["status"] != "ready":
-                scene["duration"] = max(probe_duration(audio), 0.3)
-            scene["status"] = "ready"
+            ensure_scene_media(folder, manifest, scene, req, video, voice, check, save)
             start += scene["duration"]
             atomic_write(folder / "timeline.json", manifest)
         manifest["duration_actual"] = round(start,3)
@@ -410,6 +419,9 @@ def regenerate_work(project_id: str, scene_id: int, is_cancelled: Callable[[], b
     def check() -> None:
         if is_cancelled():
             raise JobCancelled("Cancellation requested")
+    def save(stage: str) -> None:
+        manifest["stage"] = stage
+        atomic_write(folder / "timeline.json", manifest)
     try:
         check()
         providers.preflight(req)
@@ -417,27 +429,7 @@ def regenerate_work(project_id: str, scene_id: int, is_cancelled: Callable[[], b
         atomic_write(folder / "timeline.json", manifest)
         video = providers.make("video", req.video_provider)
         voice = providers.make("voice", req.voice_provider)
-        clip, audio = folder / scene["clip"], folder / scene["voice"]
-        if not clip.is_file():
-            partial = clip.with_name(clip.stem + ".partial.mp4")
-            partial.unlink(missing_ok=True)
-            video.generate(scene, partial, req)
-            media.validate_clip(partial, scene["duration"])
-            partial.replace(clip)
-        else:
-            media.validate_clip(clip, scene["duration"])
-        check()
-        if not audio.is_file():
-            partial = audio.with_name(audio.stem + ".partial.wav")
-            partial.unlink(missing_ok=True)
-            voice.generate(scene["narration"], partial, scene["duration"], req.language)
-            media.validate_voice(partial, scene["duration"], req.voice_provider == "silent")
-            partial.replace(audio)
-        else:
-            media.validate_voice(audio, scene["duration"], req.voice_provider == "silent")
-        if req.voice_provider == "kokoro" and scene["status"] != "ready":
-            scene["duration"] = probe_duration(audio)
-        scene["status"] = "ready"
+        ensure_scene_media(folder, manifest, scene, req, video, voice, check, save)
         atomic_write(folder / "timeline.json", manifest)
         check()
         start = 0.0
@@ -445,8 +437,10 @@ def regenerate_work(project_id: str, scene_id: int, is_cancelled: Callable[[], b
             s["start"] = round(start, 3)
             start += s["duration"]
         manifest["duration_actual"] = round(start,3)
+        save("captions")
         captions(manifest["scenes"], folder, providers.caption_choice(req) == "whisper")
         check()
+        save("rendering")
         render(folder, manifest)
         export_otio(folder, manifest["scenes"])
         manifest["revision"] = manifest.get("revision", 0) + 1

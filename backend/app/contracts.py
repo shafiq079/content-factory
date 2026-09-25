@@ -16,6 +16,7 @@ class Scene(BaseModel):
 
     id: int = Field(ge=1)
     duration: float = Field(ge=0.3, le=3600)
+    planned_duration: float | None = Field(default=None, ge=0.3, le=3600)
     narration: str = Field(min_length=1)
     visual_prompt: str = Field(min_length=1)
     camera: str = "static"
