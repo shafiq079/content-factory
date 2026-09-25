@@ -83,6 +83,25 @@ class JobStore:
                 (project_id, "regenerate", scene_id, "queued", time.time()))
             return manifest
 
+    def enqueue_render(self, project_id: str, caption_style: str) -> dict:
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT state FROM jobs WHERE project_id=?", (project_id,)).fetchone()
+            if row and row["state"] in ("queued", "running"):
+                raise RuntimeError("Project already has a running or queued job")
+            manifest = core.load(project_id)
+            if manifest["status"] != "complete":
+                raise RuntimeError("Only completed projects can render again")
+            if caption_style not in core.CAPTION_STYLES:
+                raise ValueError("Unknown caption style")
+            manifest.update(caption_style=caption_style, status="queued", stage="queued to render again", error=None)
+            core.atomic_write(core.project_path(project_id) / "timeline.json", manifest)
+            db.execute("""INSERT INTO jobs(project_id,kind,state,updated_at) VALUES(?,?,?,?)
+                ON CONFLICT(project_id) DO UPDATE SET kind='render',scene_id=NULL,state='queued',token=NULL,
+                lease_until=NULL,cancel_requested=0,updated_at=excluded.updated_at""",
+                (project_id, "render", "queued", time.time()))
+            return manifest
+
     def claim(self) -> dict | None:
         now = time.time()
         with self.connect() as db:
@@ -161,6 +180,8 @@ def worker_loop(store: JobStore, stop: threading.Event) -> None:
             check = lambda: store.cancelled(project_id, token)
             if job["kind"] == "regenerate":
                 core.regenerate_work(project_id, job["scene_id"], check)
+            elif job["kind"] == "render":
+                core.render_work(project_id, check)
             else:
                 core.process(project_id, check)
             state = core.load(project_id)["status"]
