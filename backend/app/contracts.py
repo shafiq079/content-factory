@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from .research import Conflict, ResearchBrief, Source, NUMBERS
 
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 
 class Scene(BaseModel):
@@ -60,10 +60,31 @@ class SFXTrack(BaseModel):
     fade_out: float = Field(default=0.3, ge=0, le=30)
 
 
+class ClaimReviewItem(BaseModel):
+    scene_id: int = Field(ge=1)
+    factual: bool = False
+    verdict: Literal["approved", "revised", "blocked"] = "approved"
+    source_ids: list[int] = Field(default_factory=list)
+    claims: list[str] = Field(default_factory=list)
+    reason: str = Field(default="", max_length=1000)
+    original_narration: str = ""
+    reviewed_narration: str = ""
+
+
+class ClaimReview(BaseModel):
+    status: Literal["unreviewed", "not_required", "approved", "approved_after_revision", "blocked"] = "unreviewed"
+    reviewer: str = "none"
+    reviewed_at: str | None = None
+    fingerprint: str = ""
+    attempts: int = Field(default=0, ge=0, le=5)
+    items: list[ClaimReviewItem] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=list)
+
+
 class Timeline(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    schema_version: Literal[6]
+    schema_version: Literal[7]
     id: str = Field(pattern=r"^[a-f0-9]{32}$")
     request: dict
     status: Literal["queued", "running", "failed", "cancelled", "complete"]
@@ -75,6 +96,7 @@ class Timeline(BaseModel):
     caption_style: Literal["classic", "bold", "minimal"] = "classic"
     research: list[Source] = Field(default_factory=list)
     research_brief: ResearchBrief = Field(default_factory=ResearchBrief)
+    claim_review: ClaimReview = Field(default_factory=ClaimReview)
     idea: str = ""
     hook: str = ""
     script: str = ""
@@ -98,6 +120,27 @@ class Plan(BaseModel):
     scenes: list[Scene] = Field(min_length=2)
 
 
+
+def validate_scene_grounding(scenes: list[Scene], sources: list[Source],
+                             conflicts: list[Conflict] | None = None) -> None:
+    known = {source.id for source in sources}
+    if any(set(scene.source_ids) - known for scene in scenes):
+        raise ValueError("Planner cited a source not in the research brief")
+    by_id = {source.id: source for source in sources}
+    for scene in scenes:
+        figures = {token.replace(",", "") for token in NUMBERS.findall(scene.narration)}
+        if sources and figures:
+            if not scene.source_ids:
+                raise ValueError(f"Scene {scene.id} has a precise figure without a source ID")
+            evidence = " ".join((by_id[source_id].evidence or by_id[source_id].excerpt) for source_id in scene.source_ids)
+            available = {token.replace(",", "") for token in NUMBERS.findall(evidence)}
+            if figures - available:
+                raise ValueError(f"Scene {scene.id} has a figure absent from its cited evidence")
+            if any(set(conflict.source_ids) & set(scene.source_ids) for conflict in conflicts or []):
+                if not any(word in scene.narration.lower() for word in ("according", "estimat", "reported", "between", "varies", "disagree", "differ", "around", "approximately", "about")):
+                    raise ValueError(f"Scene {scene.id} presents a disputed figure without qualification")
+
+
 def validate_plan(plan: dict, sources: list[Source], duration: int,
                   conflicts: list[Conflict] | None = None) -> dict:
     parsed = Plan.model_validate(plan)
@@ -116,22 +159,7 @@ def validate_plan(plan: dict, sources: list[Source], duration: int,
         words = len(scene.narration.split())
         if words > math.ceil(scene.duration * 2.6):
             raise ValueError(f"Scene {scene.id} narration is too long for its duration")
-    known = {source.id for source in sources}
-    if any(set(scene.source_ids) - known for scene in parsed.scenes):
-        raise ValueError("Planner cited a source not in the research brief")
-    by_id = {source.id: source for source in sources}
-    for scene in parsed.scenes:
-        figures = {token.replace(",", "") for token in NUMBERS.findall(scene.narration)}
-        if sources and figures:
-            if not scene.source_ids:
-                raise ValueError(f"Scene {scene.id} has a precise figure without a source ID")
-            evidence = " ".join((by_id[source_id].evidence or by_id[source_id].excerpt) for source_id in scene.source_ids)
-            available = {token.replace(",", "") for token in NUMBERS.findall(evidence)}
-            if figures - available:
-                raise ValueError(f"Scene {scene.id} has a figure absent from its cited evidence")
-            if any(set(conflict.source_ids) & set(scene.source_ids) for conflict in conflicts or []):
-                if not any(word in scene.narration.lower() for word in ("according", "estimat", "reported", "between", "varies", "disagree", "differ", "around", "approximately", "about")):
-                    raise ValueError(f"Scene {scene.id} presents a disputed figure without qualification")
+    validate_scene_grounding(parsed.scenes, sources, conflicts)
     scenes = [scene.model_dump(exclude_none=True) for scene in parsed.scenes]
     return {"idea": parsed.idea, "story_arc": parsed.story_arc, "visual_bible": parsed.visual_bible,
             "hook": scenes[0]["narration"],
@@ -141,7 +169,7 @@ def validate_plan(plan: dict, sources: list[Source], duration: int,
 def migrate_timeline(data: dict) -> dict:
     """Upgrade older manifests in place; refuse unknown future formats."""
     version = data.get("schema_version", 1)
-    if version not in (1, 2, 3, 4, 5, SCHEMA_VERSION):
+    if version not in (1, 2, 3, 4, 5, 6, SCHEMA_VERSION):
         raise ValueError(f"Unsupported timeline schema version: {version}")
     if version != SCHEMA_VERSION:
         data = {**data, "schema_version": SCHEMA_VERSION}
@@ -169,4 +197,6 @@ def migrate_timeline(data: dict) -> dict:
     data.setdefault("music", None)
     data.setdefault("sfx", [])
     data.setdefault("research_brief", ResearchBrief(mode="legacy" if data.get("research") else "none").model_dump())
+    data.setdefault("claim_review", ClaimReview(status="unreviewed" if data.get("research") else "not_required",
+                                                limitations=["Legacy project has not passed the automated evidence review."] if data.get("research") else []).model_dump())
     return Timeline.model_validate(data).model_dump()
