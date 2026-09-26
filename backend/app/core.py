@@ -916,7 +916,7 @@ def revoice_work(project_id: str, is_cancelled: Callable[[], bool] = lambda: Fal
     try:
         if is_cancelled():
             raise JobCancelled("Cancellation requested")
-        providers.preflight(req)
+        providers.preflight_voice(req)
         voice = providers.make("voice", req.voice_provider)
         manifest.update(status="running", error=None)
         save("regenerating narration")
