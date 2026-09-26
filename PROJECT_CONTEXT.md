@@ -255,9 +255,31 @@ Research modes:
 
 SearXNG is operator-configured with `SEARXNG_URL` pointing to an HTTP loopback origin (publish a container port to loopback). Enable the instance's JSON result format. No paid search API is required. The broader provider bounds results, ranks clear primary .gov/.edu/.int sources and topic-relevant titles, filters obvious navigation/spam, deduplicates URLs/text and selects diverse domains. These are transparent selection rules, not truth scores. Web HTML is fetched over HTTPS on port 443 with validated public DNS pinned to the TLS socket, revalidated redirects, response type/size limits and timeouts. Trafilatura >=2.0 (Apache 2.0) extracts main text and available page metadata; unsupported, private, binary, huge or inaccessible pages are skipped. Wikipedia uses its existing public API. Neither service is an unrestricted crawler.
 
-Timeline schema v6 saves `research[]` Source records: stable numeric ID (Wikipedia page ID or deterministic URL hash within JavaScript's safe integer range), title, canonical URL, domain, publisher, available publication date, retrieval timestamp, excerpt, verbatim selected evidence and provider. `research_brief` stores the effective mode, limitations and possible numerical disagreements identified by a deliberately narrow cross-source sentence comparison. The selected sources are persisted before planning, so retries reuse them instead of repeating fetches. Existing v5 manifests get a legacy brief and retain their sources.
+Timeline schema v7 saves `research[]` Source records: stable numeric ID (Wikipedia page ID or deterministic URL hash within JavaScript's safe integer range), title, canonical URL, domain, publisher, available publication date, retrieval timestamp, excerpt, verbatim selected evidence and provider. `research_brief` stores the effective mode, limitations and possible numerical disagreements identified by a deliberately narrow cross-source sentence comparison. The selected sources are persisted before planning, so retries reuse them instead of repeating fetches. Existing v5/v6 manifests retain their sources; v6 factual projects migrate with claim review marked unreviewed until the next factual render/edit path checks them.
 
-AI Director receives a structured evidence pack with IDs and possible conflicts and is instructed to cite factual scenes, avoid invented numbers/dates/names, and qualify weak/conflicting evidence; creative portions do not need citations. The plan validator rejects unknown IDs and precise figures missing from cited passages. It refuses an unqualified disputed figure when a possible numerical disagreement concerns a cited source. This only catches a narrow subset of factual errors: citation relevance, context, naming and actual truth still require review. The frontend displays evidence, source links/publisher/date, limitations, potential conflicts and citing scene IDs. External source text is treated as untrusted instructions in the Director prompt.
+AI Director receives a structured evidence pack with IDs and possible conflicts and is instructed to cite factual scenes, avoid invented numbers/dates/names, and qualify weak/conflicting evidence; creative portions do not need citations. The plan validator rejects unknown IDs and precise figures missing from cited passages. It refuses an unqualified disputed figure when a possible numerical disagreement concerns a cited source.
+
+### Automated evidence review gate
+
+The user does not want a mandatory manual approval step, so factual Ollama projects now use a second automated evidence-review pass:
+- it runs after planning **before video/TTS generation**, preventing unsupported content from consuming GPU work
+- it uses only the saved research evidence and treats source text as untrusted content
+- every scene is classified as factual or creative/connective
+- factual scenes must cite known evidence sources that directly support the narration
+- unsupported narration is automatically rewritten when a short evidence-backed replacement can preserve the scene purpose
+- repaired narration is reviewed again; up to three review passes are allowed
+- reviewer source IDs are validated and the existing numeric/conflict grounding contract is rerun after every repair
+- if support cannot be established, the project fails closed before generation/rendering instead of asking the user to manually approve it
+- `OLLAMA_REVIEW_MODEL` may select a separate installed local model; otherwise `OLLAMA_MODEL` is reused
+- a content fingerprint prevents unrelated visual, transition, music, clip, voice-speed or ordering edits from repeatedly invoking the reviewer
+- narration edits invalidate the fingerprint and automatically rerun the evidence gate before TTS/video/render work
+- uploaded narration audio is never silently rewritten; an unsupported uploaded narration blocks rather than desynchronizing saved audio and text
+- native-dialogue repairs made before generation also update the exact-dialogue instruction in the visual prompt
+- timeline v7 persists review status, model, attempts, scene claims, reasons, citations, original/reviewed narration and limitations
+- OTIO project metadata includes the claim-review record
+- the frontend shows approval/revision/block information and any automatic rewrites
+
+This is **automated evidence alignment, not human fact checking**. Approval means the narration appears supported by the saved passages; it does not prove source truth, completeness, freshness or interpretation.
 
 ## 10. Current Repository State
 
@@ -280,12 +302,13 @@ Important completed milestones:
 - editable project background music and timeline SFX with render-only FFmpeg mixing
 - render-only scene ordering plus black/white fade transition controls
 - scene clip/voice import, narration text and mode editing without unrelated model calls; immutable source assets and timeline v5 migration
-- Research v2 structured source evidence, optional SearXNG, safer article extraction, conflict review, numeric grounding and timeline v6 migration
+- Research v2 structured source evidence, optional SearXNG, safer article extraction, conflict review and numeric grounding
+- automated factual evidence review/repair gate before expensive generation and factual rerenders; timeline v7 migration
 - GitHub Actions frontend build + backend CPU tests
 
 ### Most recent completed development work
 
-**Research v2** adds a source-backed research pack to the director path. SearXNG search is optional and self-hosted; Wikipedia remains the reference fallback. Trafilatura extracts public pages with bounded secure retrieval. Projects retain source evidence, provenance and an explicit research brief in timeline v6. Scene IDs point to the saved sources; the planning contract rejects unsupported precise figures and flags possible numerical disagreements for review. These checks do not constitute automatic fact checking. GPU generation remains unverified. Next recommended task: build a review/approval step for factual scene claims when observed content quality warrants it; focused batch editing is the next smaller editor task.
+**Automated factual evidence review** now sits between grounded planning and expensive media generation. Factual Ollama scenes are independently rechecked against the saved evidence pack, automatically repaired when a safe supported rewrite is possible, and reviewed again. Unresolved claims fail closed before video generation/final rendering. The approval record is persisted in timeline v7 and surfaced in the UI. This removes the mandatory manual review step while explicitly remaining weaker than human fact checking. GPU generation remains unverified. Next recommended task: focused scene batch editing for repeated render-only/editor operations.
 
 ## 11. Important Source Files
 
@@ -362,12 +385,11 @@ When a GPU becomes available, the first validation should compare identical prom
 
 Current priority order:
 
-1. Grounded-scene review and approval before rendering if content reviews reveal unsupported claims
-2. Focused scene batch editing if real use calls for it
-3. Add another video provider such as Wan
-4. Real GPU validation of LTX Fast vs DFR Quality
-5. Quality tuning based on real generated outputs
-6. Social publishing/analytics only after generation quality is proven
+1. Focused scene batch editing for repeated safe operations
+2. Add another video provider such as Wan
+3. Real GPU validation of LTX Fast vs DFR Quality
+4. Quality tuning based on real generated outputs
+5. Social publishing/analytics only after generation quality is proven
 
 ## 14. Development Rules for Future Agents
 

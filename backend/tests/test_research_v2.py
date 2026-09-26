@@ -149,9 +149,10 @@ def test_v5_migrates_research_brief():
            "scenes": [], "assets": {}, "error": None, "revision": 0, "research": [
                _source(4, "en.wikipedia.org", "A reference article.").model_dump()]}
     upgraded = contracts.migrate_timeline(old)
-    assert upgraded["schema_version"] == 6
+    assert upgraded["schema_version"] == contracts.SCHEMA_VERSION
     assert upgraded["research"][0]["id"] == 4
     assert upgraded["research_brief"]["mode"] == "legacy"
+    assert upgraded["claim_review"]["status"] == "unreviewed"
 
 
 def test_creative_project_skips_network_research(monkeypatch, tmp_path: Path):

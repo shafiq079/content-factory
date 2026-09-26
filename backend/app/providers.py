@@ -53,9 +53,13 @@ def ollama_check(_: core.Request) -> None:
             models = json.load(response).get("models", [])
     except (OSError, ValueError) as exc:
         raise RuntimeError(f"Ollama is unavailable at {parsed.netloc}: {exc}") from exc
+    installed = {item.get("name") for item in models}
     model = os.getenv("OLLAMA_MODEL", "qwen2.5:7b")
-    if model not in (item.get("name") for item in models):
+    if model not in installed:
         raise RuntimeError(f"Ollama model not installed: {model}")
+    review_model = os.getenv("OLLAMA_REVIEW_MODEL", model)
+    if review_model not in installed:
+        raise RuntimeError(f"Ollama review model not installed: {review_model}")
 
 
 def whisper_check(_: core.Request) -> None:
