@@ -121,8 +121,10 @@ def regenerate_scene(project_id: str, scene_id: int, edit: SceneEdit):
     try:
         providers.preflight(Request.model_validate(load(project_id)["request"]))
         return app.state.jobs.enqueue_regeneration(project_id, scene_id, edit.visual_prompt, edit.narration, edit.audio_mode)
-    except (ValueError, FileNotFoundError):
+    except (LookupError, FileNotFoundError):
         raise HTTPException(404, "Project or scene not found")
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(409, str(exc))
 
@@ -172,7 +174,8 @@ def replace_scene_clip(project_id: str, scene_id: int, file: UploadFile = File(.
             raise HTTPException(409, "Only completed projects can replace scene clips")
         folder = project_path(project_id)
         relative = scene_assets.save_clip(folder, scene_id, file.filename or "", file.file,
-                                          scene.get("audio_mode") == "native")
+                                          scene.get("audio_mode") == "native" or
+                                          (manifest["request"].get("video_provider") == "wan22" and scene.get("audio_mode") == "hybrid"))
         try:
             return app.state.jobs.enqueue_scene_asset(project_id, scene_id, "clip", relative)
         except Exception:

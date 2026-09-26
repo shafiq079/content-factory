@@ -31,6 +31,10 @@ CAPTION_STYLES = {
     "minimal": "FontSize=14,Alignment=2,MarginV=100,Outline=1",
 }
 
+# A worker may process LTX and Wan projects sequentially. Keep only one video
+# model family resident in GPU memory, including during scene regeneration.
+GPU_VIDEO_LOCK = threading.RLock()
+
 
 class Request(BaseModel):
     topic: str = Field(min_length=3, max_length=300)
@@ -51,8 +55,8 @@ class Request(BaseModel):
     @field_validator("video_provider")
     @classmethod
     def video_choice(cls, value: str) -> str:
-        if value not in ("preview", "ltx25"):
-            raise ValueError("Choose preview or ltx25")
+        if value not in ("preview", "ltx25", "wan22"):
+            raise ValueError("Choose preview, ltx25 or wan22")
         return value
 
     @field_validator("generation_mode")
@@ -702,7 +706,26 @@ class LTX25Video(VideoGenerator):
                 cls._runtime_key = key
             return cls._runtime
 
+    @classmethod
+    def release_runtime(cls) -> None:
+        """Free LTX weights when another video engine takes over the GPU."""
+        with cls._runtime_lock:
+            if cls._runtime is not None:
+                cls._runtime = None
+                cls._runtime_key = None
+                import gc
+                import torch
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+
     def generate(self, scene: dict, output: Path, request: Request) -> None:
+        with GPU_VIDEO_LOCK:
+            from .wan_video import Wan22Video
+            Wan22Video.release_runtime()
+            self._generate_locked(scene, output, request)
+
+    def _generate_locked(self, scene: dict, output: Path, request: Request) -> None:
         mode = request.generation_mode
         paths = self.configured_paths(mode)
         pipeline, encode_video, get_video_chunks_number = self._runtime_for(paths, mode)
@@ -1431,22 +1454,22 @@ def validate_scene_batch(folder: Path, manifest: dict, edit: dict) -> list[int]:
     missing = []
     for scene_id in ids:
         scene = by_id[scene_id]
-        if mode == "native":
+        if mode == "native" or (mode == "hybrid" and req.video_provider == "wan22"):
             try:
                 has_audio = bool(scene.get("clip")) and media.has_audio(folder / scene["clip"])
             except (OSError, media.MediaValidationError):
                 has_audio = False
             if not has_audio:
-                raise ValueError(f"Scene {scene_id} needs an active clip with audio for Native mode")
-        elif scene.get("voice") and (folder / scene["voice"]).is_file():
+                raise ValueError(f"Scene {scene_id} needs an active clip with audio for {mode} mode")
+        if mode != "native" and scene.get("voice") and (folder / scene["voice"]).is_file():
             try:
                 media.validate_voice(folder / scene["voice"], scene.get("planned_duration") or scene["duration"],
                                      req.voice_provider == "silent" and scene.get("voice_origin") != "uploaded")
             except (OSError, media.MediaValidationError) as exc:
                 raise ValueError(f"Scene {scene_id} has an invalid narration asset: {exc}") from exc
-        elif scene.get("voice") and scene.get("voice_origin") == "uploaded":
+        elif mode != "native" and scene.get("voice") and scene.get("voice_origin") == "uploaded":
             raise ValueError(f"Scene {scene_id} has a missing uploaded narration asset")
-        else:
+        elif mode != "native":
             if not scene["narration"].strip():
                 raise ValueError(f"Scene {scene_id} needs narration text before TTS")
             missing.append(scene_id)
