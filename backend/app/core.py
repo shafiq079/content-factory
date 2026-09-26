@@ -567,6 +567,9 @@ def process(project_id: str, is_cancelled: Callable[[], bool] = lambda: False) -
             planner = providers.make("planner", req.planner_provider)
             sources = [Source.model_validate(source) for source in manifest["research"]]
             manifest.update(contracts.validate_plan(planner.plan(req, sources), sources, req.duration))
+            planned_mode = req.generation_mode if req.video_provider == "ltx25" else "fast"
+            for planned_scene in manifest["scenes"]:
+                planned_scene["generation_mode"] = planned_mode
             save("scene plan ready")
         scenes = manifest["scenes"]
         video = providers.make("video", req.video_provider)
