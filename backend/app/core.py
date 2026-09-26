@@ -1432,11 +1432,18 @@ def validate_scene_batch(folder: Path, manifest: dict, edit: dict) -> list[int]:
     for scene_id in ids:
         scene = by_id[scene_id]
         if mode == "native":
-            if not scene.get("clip") or not media.has_audio(folder / scene["clip"]):
+            try:
+                has_audio = bool(scene.get("clip")) and media.has_audio(folder / scene["clip"])
+            except (OSError, media.MediaValidationError):
+                has_audio = False
+            if not has_audio:
                 raise ValueError(f"Scene {scene_id} needs an active clip with audio for Native mode")
         elif scene.get("voice") and (folder / scene["voice"]).is_file():
-            media.validate_voice(folder / scene["voice"], scene.get("planned_duration") or scene["duration"],
-                                 req.voice_provider == "silent" and scene.get("voice_origin") != "uploaded")
+            try:
+                media.validate_voice(folder / scene["voice"], scene.get("planned_duration") or scene["duration"],
+                                     req.voice_provider == "silent" and scene.get("voice_origin") != "uploaded")
+            except (OSError, media.MediaValidationError) as exc:
+                raise ValueError(f"Scene {scene_id} has an invalid narration asset: {exc}") from exc
         elif scene.get("voice") and scene.get("voice_origin") == "uploaded":
             raise ValueError(f"Scene {scene_id} has a missing uploaded narration asset")
         else:
