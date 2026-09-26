@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from .research import Source
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 class Scene(BaseModel):
@@ -32,6 +32,10 @@ class Scene(BaseModel):
     start: float | None = Field(default=None, ge=0)
     clip: str | None = None
     voice: str | None = None
+    original_clip: str | None = None
+    original_voice: str | None = None
+    clip_origin: Literal["generated", "uploaded"] = "generated"
+    voice_origin: Literal["generated", "uploaded"] = "generated"
 
 
 class MusicTrack(BaseModel):
@@ -59,7 +63,7 @@ class SFXTrack(BaseModel):
 class Timeline(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    schema_version: Literal[4]
+    schema_version: Literal[5]
     id: str = Field(pattern=r"^[a-f0-9]{32}$")
     request: dict
     status: Literal["queued", "running", "failed", "cancelled", "complete"]
@@ -122,7 +126,7 @@ def validate_plan(plan: dict, sources: list[Source], duration: int) -> dict:
 def migrate_timeline(data: dict) -> dict:
     """Upgrade older manifests in place; refuse unknown future formats."""
     version = data.get("schema_version", 1)
-    if version not in (1, 2, 3, SCHEMA_VERSION):
+    if version not in (1, 2, 3, 4, SCHEMA_VERSION):
         raise ValueError(f"Unsupported timeline schema version: {version}")
     if version != SCHEMA_VERSION:
         data = {**data, "schema_version": SCHEMA_VERSION}
@@ -132,6 +136,10 @@ def migrate_timeline(data: dict) -> dict:
     scenes = []
     for index, scene in enumerate(data.get("scenes", [])):
         item = dict(scene)
+        item.setdefault("original_clip", item.get("clip"))
+        item.setdefault("original_voice", item.get("voice"))
+        item.setdefault("clip_origin", "generated")
+        item.setdefault("voice_origin", "generated")
         transition = item.get("transition", "cut")
         if transition not in ("cut", "fade", "fade_white"):
             transition = "cut"

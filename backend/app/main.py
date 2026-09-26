@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from . import audio, contracts, core, providers
+from . import audio, contracts, core, media, providers, scene_assets
 from .core import Request, create, load, project_path
 from .jobs import JobStore, worker_loop
 
@@ -62,6 +62,14 @@ class SceneEdit(BaseModel):
     audio_mode: Literal["narration", "native", "hybrid"] | None = None
 
 
+class NarrationEdit(BaseModel):
+    narration: str = Field(min_length=2, max_length=2000)
+
+
+class AudioModeEdit(BaseModel):
+    audio_mode: Literal["narration", "native", "hybrid"]
+
+
 class RenderEdit(BaseModel):
     caption_style: Literal["classic", "bold", "minimal"] = "classic"
 
@@ -99,6 +107,98 @@ def regenerate_scene(project_id: str, scene_id: int, edit: SceneEdit):
         raise HTTPException(404, "Project or scene not found")
     except RuntimeError as exc:
         raise HTTPException(409, str(exc))
+
+
+@app.post("/projects/{project_id}/scenes/{scene_id}/narration", status_code=202)
+def edit_scene_narration(project_id: str, scene_id: int, edit: NarrationEdit):
+    try:
+        manifest = load(project_id)
+        scene = next((s for s in manifest["scenes"] if s["id"] == scene_id), None)
+        if scene is None:
+            raise HTTPException(404, "Scene not found")
+        if scene.get("audio_mode") == "native":
+            raise HTTPException(422, "Native dialogue is embedded in the video; switch to narration or hybrid before editing text")
+        try:
+            providers.preflight_voice(Request.model_validate(manifest["request"]))
+        except RuntimeError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        return app.state.jobs.enqueue_scene_narration(project_id, scene_id, edit.narration)
+    except FileNotFoundError:
+        raise HTTPException(404, "Project not found")
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@app.post("/projects/{project_id}/scenes/{scene_id}/audio-mode", status_code=202)
+def edit_scene_audio_mode(project_id: str, scene_id: int, edit: AudioModeEdit):
+    try:
+        return app.state.jobs.enqueue_scene_audio_mode(project_id, scene_id, edit.audio_mode)
+    except FileNotFoundError:
+        raise HTTPException(404, "Project not found")
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@app.post("/projects/{project_id}/scenes/{scene_id}/clip", status_code=202)
+def replace_scene_clip(project_id: str, scene_id: int, file: UploadFile = File(...)):
+    try:
+        manifest = load(project_id)
+        scene = next((s for s in manifest["scenes"] if s["id"] == scene_id), None)
+        if scene is None:
+            raise HTTPException(404, "Scene not found")
+        if manifest["status"] != "complete":
+            raise HTTPException(409, "Only completed projects can replace scene clips")
+        folder = project_path(project_id)
+        relative = scene_assets.save_clip(folder, scene_id, file.filename or "", file.file,
+                                          scene.get("audio_mode") == "native")
+        try:
+            return app.state.jobs.enqueue_scene_asset(project_id, scene_id, "clip", relative)
+        except Exception:
+            (folder / relative).unlink(missing_ok=True)
+            raise
+    except FileNotFoundError:
+        raise HTTPException(404, "Project not found")
+    except media.MediaValidationError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@app.post("/projects/{project_id}/scenes/{scene_id}/narration/upload", status_code=202)
+def replace_scene_narration(project_id: str, scene_id: int,
+                            file: UploadFile = File(...), narration: str | None = Form(None)):
+    try:
+        manifest = load(project_id)
+        scene = next((s for s in manifest["scenes"] if s["id"] == scene_id), None)
+        if scene is None:
+            raise HTTPException(404, "Scene not found")
+        if manifest["status"] != "complete":
+            raise HTTPException(409, "Only completed projects can replace narration")
+        if scene.get("audio_mode") == "native":
+            raise HTTPException(422, "Native dialogue is embedded in the clip; switch to narration or hybrid first")
+        if narration is not None and not 2 <= len(narration.strip()) <= 2000:
+            raise HTTPException(422, "Narration text must be 2–2000 characters")
+        folder = project_path(project_id)
+        relative, duration = scene_assets.save_voice(folder, scene_id, file.filename or "", file.file)
+        try:
+            return app.state.jobs.enqueue_scene_asset(project_id, scene_id, "voice", relative, duration, narration.strip() if narration else None)
+        except Exception:
+            (folder / relative).unlink(missing_ok=True)
+            raise
+    except FileNotFoundError:
+        raise HTTPException(404, "Project not found")
+    except media.MediaValidationError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 
 @app.post("/projects/{project_id}/voice", status_code=202)

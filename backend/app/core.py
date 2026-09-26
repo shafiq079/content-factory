@@ -786,7 +786,12 @@ def export_otio(project_dir: Path, manifest: dict) -> None:
                                                 "audio_mode": s.get("audio_mode", "narration"),
                                                 "transition": s.get("transition", "cut"),
                                                 "transition_duration": s.get("transition_duration", 0.0),
-                                                "generation_mode": s.get("generation_mode", "fast")}))
+                                                "generation_mode": s.get("generation_mode", "fast"),
+                                                "clip_origin": s.get("clip_origin", "generated"),
+                                                "original_clip": s.get("original_clip") or "",
+                                                "voice_origin": s.get("voice_origin", "generated"),
+                                                "voice_asset": s.get("voice") or "",
+                                                "original_voice": s.get("original_voice") or ""}))
     otio.adapters.write_to_file(timeline, str(project_dir / "timeline.otio"))
 
 
@@ -844,7 +849,7 @@ def ensure_scene_media(folder: Path, manifest: dict, scene: dict, req: Request,
         measured = None
         if audio.is_file():
             try:
-                measured = media.validate_voice(audio, target, req.voice_provider == "silent")
+                measured = media.validate_voice(audio, target, req.voice_provider == "silent" and scene.get("voice_origin") != "uploaded")
             except media.MediaValidationError:
                 audio.unlink()
         if not audio.is_file():
@@ -856,7 +861,7 @@ def ensure_scene_media(folder: Path, manifest: dict, scene: dict, req: Request,
             partial.replace(audio)
         if measured is None:
             raise RuntimeError(f"Narration was not produced for scene {scene['id']}")
-        scene["duration"] = round(measured.duration, 3) if req.voice_provider == "kokoro" else target
+        scene["duration"] = round(measured.duration, 3) if req.voice_provider == "kokoro" or scene.get("voice_origin") == "uploaded" else target
         save(f"narration timed for scene {scene['id']}/{len(manifest['scenes'])}")
     else:
         # Native mode lets the generated LTX clip own the audio and keeps no extra voice asset.
@@ -930,6 +935,8 @@ def process(project_id: str, is_cancelled: Callable[[], bool] = lambda: False) -
             scene["clip"] = f"clips/scene-{scene['id']:02d}.mp4"
             scene["voice"] = None if scene.get("audio_mode", "narration") == "native" else f"voice/scene-{scene['id']:02d}.wav"
             ensure_scene_media(folder, manifest, scene, req, video, voice, check, save)
+            scene["original_clip"] = scene.get("original_clip") or scene["clip"]
+            scene["original_voice"] = scene.get("original_voice") or scene.get("voice")
             atomic_write(folder / "timeline.json", manifest)
         recalculate_timeline(manifest)
         check()
@@ -972,6 +979,8 @@ def regenerate_work(project_id: str, scene_id: int, is_cancelled: Callable[[], b
         video = providers.make("video", req.video_provider)
         voice = providers.make("voice", req.voice_provider)
         ensure_scene_media(folder, manifest, scene, req, video, voice, check, save)
+        scene["original_clip"] = scene.get("original_clip") or scene["clip"]
+        scene["original_voice"] = scene.get("original_voice") or scene.get("voice")
         atomic_write(folder / "timeline.json", manifest)
         check()
         recalculate_timeline(manifest)
@@ -983,6 +992,7 @@ def regenerate_work(project_id: str, scene_id: int, is_cancelled: Callable[[], b
         export_otio(folder, manifest)
         manifest["revision"] = manifest.get("revision", 0) + 1
         manifest.update(status="complete", stage="complete", error=None)
+        manifest.pop("pending_job", None)
     except JobCancelled:
         manifest.update(status="cancelled", stage="cancelled", error=None)
     except Exception as exc:
@@ -1018,12 +1028,11 @@ def revoice_work(project_id: str, is_cancelled: Callable[[], bool] = lambda: Fal
                 raise JobCancelled("Cancellation requested")
             if scene.get("audio_mode", "narration") == "native":
                 scene["voice"] = None
-                measured_by_scene[scene["id"]] = scene.get("planned_duration") or scene["duration"]
+                measured_by_scene[scene["id"]] = scene["duration"]
                 continue
 
             target = scene.get("planned_duration") or scene["duration"]
-            voice_rel = scene.get("voice") or f"voice/scene-{scene['id']:02d}.wav"
-            scene["voice"] = voice_rel
+            voice_rel = f"voice/scene-{scene['id']:02d}-{uuid.uuid4().hex}.wav"
             final_path = folder / voice_rel
             final_path.parent.mkdir(exist_ok=True)
             partial = final_path.with_name(final_path.stem + ".revoice.partial.wav")
@@ -1044,6 +1053,9 @@ def revoice_work(project_id: str, is_cancelled: Callable[[], bool] = lambda: Fal
             partial = final_path.with_name(final_path.stem + ".revoice.partial.wav")
             partial.replace(final_path)
             temp_files.remove(partial)
+            scene["original_voice"] = scene.get("original_voice") or scene.get("voice")
+            scene["voice"] = final_path.relative_to(folder).as_posix()
+            scene["voice_origin"] = "generated"
             scene["duration"] = measured_by_scene[scene["id"]]
 
         recalculate_timeline(manifest)
@@ -1057,6 +1069,7 @@ def revoice_work(project_id: str, is_cancelled: Callable[[], bool] = lambda: Fal
         export_otio(folder, manifest)
         manifest["revision"] = manifest.get("revision", 0) + 1
         manifest.update(status="complete", stage="complete", error=None)
+        manifest.pop("pending_job", None)
     except JobCancelled:
         manifest.update(status="cancelled", stage="cancelled", error=None)
     except Exception as exc:
@@ -1066,6 +1079,76 @@ def revoice_work(project_id: str, is_cancelled: Callable[[], bool] = lambda: Fal
             path.unlink(missing_ok=True)
         atomic_write(folder / "timeline.json", manifest)
 
+
+
+def scene_narration_work(project_id: str, scene_id: int,
+                         is_cancelled: Callable[[], bool] = lambda: False) -> None:
+    """Synthesize one narration track and rebuild timing without a video model."""
+    from . import providers
+
+    folder = project_path(project_id)
+    manifest = load(project_id)
+    req = Request.model_validate(manifest["request"])
+    scene = next(s for s in manifest["scenes"] if s["id"] == scene_id)
+    try:
+        if is_cancelled():
+            raise JobCancelled("Cancellation requested")
+        providers.preflight_voice(req)
+        manifest.update(status="running", stage=f"voicing scene {scene_id}", error=None)
+        atomic_write(folder / "timeline.json", manifest)
+        target = folder / scene["voice"]
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if not target.is_file():
+            partial = target.with_name(target.stem + ".partial.wav")
+            partial.unlink(missing_ok=True)
+            try:
+                providers.make("voice", req.voice_provider).generate(
+                    scene["narration"], partial, scene.get("planned_duration") or scene["duration"],
+                    req.language, req.voice_id, req.voice_speed)
+                media.validate_voice(partial, scene.get("planned_duration") or scene["duration"], req.voice_provider == "silent")
+                partial.replace(target)
+            finally:
+                partial.unlink(missing_ok=True)
+        measured = media.validate_voice(target, scene.get("planned_duration") or scene["duration"], req.voice_provider == "silent")
+        scene["duration"] = round(measured.duration, 3)
+        recalculate_timeline(manifest)
+        atomic_write(folder / "timeline.json", manifest)
+        if is_cancelled():
+            raise JobCancelled("Cancellation requested")
+        manifest["stage"] = "rebuilding captions"
+        captions(manifest["scenes"], folder, providers.caption_choice(req) == "whisper")
+        if is_cancelled():
+            raise JobCancelled("Cancellation requested")
+        manifest["stage"] = "rendering edited narration"
+        atomic_write(folder / "timeline.json", manifest)
+        render(folder, manifest)
+        export_otio(folder, manifest)
+        manifest["revision"] = manifest.get("revision", 0) + 1
+        manifest.update(status="complete", stage="complete", error=None)
+        manifest.pop("pending_job", None)
+    except JobCancelled:
+        manifest.update(status="cancelled", stage="cancelled", error=None)
+    except Exception as exc:
+        manifest.update(status="failed", stage="failed", error=f"{type(exc).__name__}: {exc}")
+    finally:
+        atomic_write(folder / "timeline.json", manifest)
+
+
+def validate_active_scene(folder: Path, scene: dict, req: Request) -> None:
+    """Scene source lengths may differ from timeline lengths; FFmpeg fits each clip."""
+    clip = folder / scene["clip"]
+    video = media.stream(media.inspect(clip), "video")
+    if not video.get("width") or not video.get("height"):
+        raise media.MediaValidationError(f"Scene {scene['id']} has no video dimensions")
+    if scene.get("audio_mode", "narration") == "native":
+        if not media.has_audio(clip):
+            raise media.MediaValidationError(f"Native audio requested but scene {scene['id']} clip has no audio")
+    else:
+        voice_path = scene.get("voice")
+        if not voice_path:
+            raise media.MediaValidationError(f"Scene {scene['id']} is missing narration audio")
+        media.validate_voice(folder / voice_path, scene.get("planned_duration") or scene["duration"],
+                             req.voice_provider == "silent" and scene.get("voice_origin") != "uploaded")
 
 
 def timeline_work(project_id: str, is_cancelled: Callable[[], bool] = lambda: False) -> None:
@@ -1086,17 +1169,7 @@ def timeline_work(project_id: str, is_cancelled: Callable[[], bool] = lambda: Fa
         manifest.update(status="running", error=None)
         save("checking timeline assets")
         for scene in manifest["scenes"]:
-            clip = folder / scene["clip"]
-            media.validate_clip(clip, scene["duration"])
-            if scene.get("audio_mode", "narration") == "native":
-                if not media.has_audio(clip):
-                    raise media.MediaValidationError(f"Native audio requested but scene {scene['id']} clip has no audio")
-            else:
-                voice_path = scene.get("voice")
-                if not voice_path:
-                    raise media.MediaValidationError(f"Scene {scene['id']} is missing narration audio")
-                media.validate_voice(folder / voice_path, scene.get("planned_duration") or scene["duration"],
-                                     req.voice_provider == "silent")
+            validate_active_scene(folder, scene, req)
         recalculate_timeline(manifest)
         save("rebuilding captions for timeline")
         captions(manifest["scenes"], folder, providers.caption_choice(req) == "whisper")
@@ -1107,6 +1180,7 @@ def timeline_work(project_id: str, is_cancelled: Callable[[], bool] = lambda: Fa
         export_otio(folder, manifest)
         manifest["revision"] = manifest.get("revision", 0) + 1
         manifest.update(status="complete", stage="complete", error=None)
+        manifest.pop("pending_job", None)
     except JobCancelled:
         manifest.update(status="cancelled", stage="cancelled", error=None)
     except Exception as exc:
@@ -1133,17 +1207,7 @@ def render_work(project_id: str, is_cancelled: Callable[[], bool] = lambda: Fals
         manifest.update(status="running", error=None)
         save("checking saved scenes")
         for scene in manifest["scenes"]:
-            clip = folder / scene["clip"]
-            media.validate_clip(clip, scene["duration"])
-            if scene.get("audio_mode", "narration") == "native":
-                if not media.has_audio(clip):
-                    raise media.MediaValidationError(f"Native audio requested but scene {scene['id']} clip has no audio")
-            else:
-                voice_path = scene.get("voice")
-                if not voice_path:
-                    raise media.MediaValidationError(f"Scene {scene['id']} is missing narration audio")
-                media.validate_voice(folder / voice_path, scene.get("planned_duration") or scene["duration"],
-                                     req.voice_provider == "silent")
+            validate_active_scene(folder, scene, req)
         media.validate_captions(folder / "captions.srt", sum(s["duration"] for s in manifest["scenes"]))
         if is_cancelled():
             raise JobCancelled("Cancellation requested")
@@ -1152,6 +1216,7 @@ def render_work(project_id: str, is_cancelled: Callable[[], bool] = lambda: Fals
         export_otio(folder, manifest)
         manifest["revision"] += 1
         manifest.update(status="complete", error=None)
+        manifest.pop("pending_job", None)
         save("complete")
     except JobCancelled:
         manifest.update(status="cancelled", error=None)

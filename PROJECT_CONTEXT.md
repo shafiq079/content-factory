@@ -49,6 +49,7 @@ Typical output is a 30–120 second vertical video, especially 60–120 second r
 - LTX Fast / Quality selector
 - Scene regeneration
 - Caption-style rerendering
+- Scene clip and narration audio replacement, scene text editor and grouped scene controls
 
 ### Backend
 - FastAPI
@@ -168,7 +169,16 @@ Each project stores:
 - intermediate render files
 - optional `.otio` export
 
-The timeline stores scene order, prompts, narration, scene duration, start times, source IDs, audio mode, generation mode, transition mode/duration, status, and asset paths.
+The timeline stores scene order, prompts, narration, scene duration, start times, source IDs, audio mode, generation mode, transition mode/duration, status, active asset paths, original asset paths and asset origin. Schema v5 migrates v4 and older projects; uploaded/generated files use unique paths and stay on disk after later edits.
+
+Scene editor action boundaries:
+- Replace video: validate/transcode a project-scoped upload, switch the active clip, rebuild captions/render; no video model, no TTS. Native mode requires an audio stream.
+- Edit narration text: narration/hybrid only, synthesize one scene's voice into a new file, measure its duration, recalculate subsequent starts and rebuild captions/render; no video model. Native dialogue is embedded in the clip and cannot be changed by text edit.
+- Replace narration audio: audio-only upload transcoded to PCM WAV; switch active voice, use measured duration, recalculate and render; no TTS or video model.
+- Change audio mode: render from current assets when compatible; a missing narration voice triggers only scene TTS. Native mode requires active clip audio.
+- Change prompt and regenerate video: the video provider runs for that scene only, writing a versioned clip; old source assets remain available.
+- Music/SFX start times are absolute project timeline positions and are preserved when narration lengths change. Users may need to reposition SFX after timing edits.
+- The import layer accepts a limited set of video/audio extensions, enforces size and stream constraints, and transcodes into project-scoped media. Uploads are manual editor assets; LTX remains the primary generation provider.
 
 ## 7. Current Scene Generation Flow
 
@@ -214,7 +224,7 @@ Implemented behavior:
 - stores camera direction, continuity guidance and source IDs
 - chooses narration / native / hybrid audio modes when the selected video provider supports native audio
 - appends continuity and the visual bible to actual visual prompts so future generated shots receive that context
-- keeps transitions at `cut` for now because the renderer does not yet implement richer transitions
+- may select cut, black fade or white fade; the renderer supports these duration-preserving transitions
 
 The deterministic template planner follows the same contract so all of this can be exercised in CPU-only CI.
 
@@ -267,11 +277,12 @@ Important completed milestones:
 - reusable Kokoro voice ID/blend/speed controls and GPU-independent project revoice workflow
 - editable project background music and timeline SFX with render-only FFmpeg mixing
 - render-only scene ordering plus black/white fade transition controls
+- scene clip/voice import, narration text and mode editing without unrelated model calls; immutable source assets and timeline v5 migration
 - GitHub Actions frontend build + backend CPU tests
 
 ### Most recent completed development work
 
-**Timeline transitions and scene ordering** are implemented as render-only edits on top of the existing scene/audio pipeline. Users can move saved scenes earlier/later and apply cut, fade-through-black or fade-through-white seams with editable durations. The transition renderer preserves total project timing and fades matching scene audio without video regeneration. The next development priority is a richer project editing workflow and asset replacement.
+**Project editing and asset replacement** now provide project-scoped clip and narration uploads, per-scene text edits, compatible audio mode changes and clearer grouped scene controls. Imported clips are normalized into MP4; voices into PCM WAV. Asset provenance and original paths are stored in timeline v5 and exported to OTIO; regeneration uses fresh asset paths. Clip, timeline and narration changes only call the provider they require. GPU generation remains unverified. Next: learn from CPU/GPU use and add a focused batch editor when useful; broader research/factual grounding is the next major product priority.
 
 ## 11. Important Source Files
 
@@ -306,6 +317,12 @@ Important completed milestones:
   - background music/SFX asset handling
   - final FFmpeg master audio mix
 
+- `backend/app/scene_assets.py`
+  - safe project-scoped clip/voice import and transcode
+
+- `frontend/app/SceneEditor.tsx`
+  - grouped scene video, audio, transition and ordering actions
+
 - `frontend/app/page.tsx`
   - current product UI
 
@@ -339,8 +356,8 @@ When a GPU becomes available, the first validation should compare identical prom
 
 Current priority order:
 
-1. Better project editing workflow and richer asset replacement
-2. Broader research / stronger factual grounding
+1. Broader research / stronger factual grounding
+2. Focused scene batch editing if real use calls for it
 3. Add another video provider such as Wan
 4. Real GPU validation of LTX Fast vs DFR Quality
 5. Quality tuning based on real generated outputs
