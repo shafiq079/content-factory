@@ -8,6 +8,12 @@ Local web app for turning a topic into an editable short video. This repository 
 
 Requires Python 3.12+, Node.js 20+, npm and FFmpeg with `libx264` and `subtitles` support.
 
+Runtime URLs are configured in files instead of source code:
+- `frontend/.env.local` -> `NEXT_PUBLIC_API_URL` (the browser-visible backend URL)
+- `backend/.env` -> `FRONTEND_URL` and `CORS_ALLOW_ORIGINS`
+
+The committed prototype values currently point to the active GitHub Codespace. If you create a new Codespace or run on another host, edit those env files and restart the frontend/backend; no application code changes are needed. The backend loads `backend/.env` automatically and Next.js loads `frontend/.env.local` automatically. Do not place secrets in the committed prototype env files.
+
 ```bash
 cd backend
 python -m venv .venv
@@ -24,7 +30,7 @@ npm ci
 npm run dev
 ```
 
-Open `http://localhost:3000`. Default settings run the **preview**: deterministic scene plan, simple non-AI colored test clips, silent WAVs, estimated script captions and FFmpeg render. It produces a playable MP4 and editable assets, but is not a content-quality demo. The backend API is at `http://127.0.0.1:8000/docs`.
+Open the frontend URL for your current environment (for Codespaces, use the forwarded port 3000 URL). Default settings run the **preview**: deterministic scene plan, simple non-AI colored test clips, silent WAVs, estimated script captions and FFmpeg render. It produces a playable MP4 and editable assets, but is not a content-quality demo. The frontend reads its API target only from `NEXT_PUBLIC_API_URL`; there is no hardcoded localhost fallback.
 
 With Ollama selected, **Automatic research** uses a self-hosted SearXNG instance when configured and keeps Wikipedia as a fallback. Configure `SEARXNG_URL=http://127.0.0.1:8080` (publish a container's port to loopback if needed) and enable JSON in SearXNG's `search.formats`. If SearXNG is unavailable, the project uses available Wikipedia article introductions and records the limitation. Select **Wikipedia references only** for that mode explicitly or **No external research** for fiction/creative work. Automatic preview mode stays research-free unless you explicitly choose a research mode. No paid search API is required.
 
@@ -68,7 +74,7 @@ Each scene can use `narration` (dedicated Kokoro/silent voice track), `native` (
 
 For repeated edits, check several scene cards or use **Select all**, then choose **Set transition** or **Set audio mode** in **Batch scene edits**. The editor shows **Render only** or **TTS + render** when a selected scene has no narration track. Fades cannot include the first scene; Cut uses zero duration. Native requires audio in every selected clip. The backend validates the entire selection, queues one persistent job, synthesizes only missing voices into new versioned assets, rebuilds captions once and produces one final render. Failed batches leave the previous timeline and active assets in place; retry the job after fixing the cause. No video model is called. The API accepts `POST /projects/{id}/scenes/batch` with `scene_ids` and either `{operation:"set_transition",transition:"fade",transition_duration:0.8}` or `{operation:"set_audio_mode",audio_mode:"hybrid"}`.
 
-The server stores projects on disk and uses a SQLite job queue in the project directory. A worker claims one job at a time and renews a lease. On restart an expired lease can be claimed again and completed scene assets are reused after ffprobe checks; invalid clips or voices are regenerated. New files are checked before publication, and the final MP4 must contain H.264 video at the requested dimensions and AAC audio with the expected duration. Captions must be ordered and stay within the timeline. Jobs can be cancelled between stages or retried from the last saved scene. A currently running model or FFmpeg process is allowed to finish its step before cancellation takes effect. Use a shared local filesystem for the SQLite database and assets; this implementation is **single-host** and has no authentication or multi-host resource scheduler. During prototype development the backend intentionally uses wildcard CORS with credentials disabled so localhost, GitHub Codespaces and other temporary frontend origins work without source edits. This is not a production security policy: keep the backend private/temporary during testing and replace wildcard CORS with an explicit allowlist plus authentication before public deployment. Longer renders at 1080×1920 can be CPU intensive.
+The server stores projects on disk and uses a SQLite job queue in the project directory. A worker claims one job at a time and renews a lease. On restart an expired lease can be claimed again and completed scene assets are reused after ffprobe checks; invalid clips or voices are regenerated. New files are checked before publication, and the final MP4 must contain H.264 video at the requested dimensions and AAC audio with the expected duration. Captions must be ordered and stay within the timeline. Jobs can be cancelled between stages or retried from the last saved scene. A currently running model or FFmpeg process is allowed to finish its step before cancellation takes effect. Use a shared local filesystem for the SQLite database and assets; this implementation is **single-host** and has no authentication or multi-host resource scheduler. During prototype development `backend/.env` sets `CORS_ALLOW_ORIGINS=*` with credentials disabled so localhost, GitHub Codespaces and other temporary frontend origins work without source edits. The application code reads CORS origins from the environment; production can switch to a comma-separated explicit allowlist without editing Python. This is not a production security policy: keep the backend private/temporary during testing and add authentication before public deployment. Longer renders at 1080×1920 can be CPU intensive.
 
 ## Scope and present limitations
 
