@@ -50,6 +50,7 @@ Typical output is a 30–120 second vertical video, especially 60–120 second r
 - Scene regeneration
 - Caption-style rerendering
 - Scene clip and narration audio replacement, scene text editor and grouped scene controls
+- Scene selection and focused batch transition/audio-mode controls
 
 ### Backend
 - FastAPI
@@ -169,7 +170,7 @@ Each project stores:
 - intermediate render files
 - optional `.otio` export
 
-The timeline stores scene order, prompts, narration, scene duration, start times, source IDs, audio mode, generation mode, transition mode/duration, status, active asset paths, original asset paths and asset origin. Schema v6 migrates v5 and older projects; uploaded/generated files use unique paths and stay on disk after later edits.
+The timeline stores scene order, prompts, narration, scene duration, start times, source IDs, audio mode, generation mode, transition mode/duration, status, active asset paths, original asset paths and asset origin. Schema v7 migrates v6 and older projects; uploaded/generated files use unique paths and stay on disk after later edits.
 
 Scene editor action boundaries:
 - Replace video: validate/transcode a project-scoped upload, switch the active clip, rebuild captions/render; no video model, no TTS. Native mode requires an audio stream.
@@ -179,6 +180,15 @@ Scene editor action boundaries:
 - Change prompt and regenerate video: the video provider runs for that scene only, writing a versioned clip; old source assets remain available.
 - Music/SFX start times are absolute project timeline positions and are preserved when narration lengths change. Users may need to reposition SFX after timing edits.
 - The import layer accepts a limited set of video/audio extensions, enforces size and stream constraints, and transcodes into project-scoped media. Uploads are manual editor assets; LTX remains the primary generation provider.
+
+### Focused scene batch editing
+
+- Each scene card has a checkbox; the editor has Select all, Clear selection, a count, transition/audio-mode settings and an execution category. There is no multi-track timeline or batch video generation.
+- `POST /projects/{id}/scenes/batch` accepts a strict discriminated operation: `set_transition` with selected IDs, mode and duration, or `set_audio_mode` with selected IDs and mode. Empty/duplicate/unknown IDs, invalid fade/cut durations and first-scene fades fail before queueing. Native validates that **every** selected active clip has audio; missing uploaded narration fails rather than being silently synthesized.
+- `JobStore.enqueue_batch` takes one SQLite project lock and saves the edit in `pending_job` while leaving scene metadata unchanged. It queues one `batch` job; startup recovery and retry reuse the saved operation. The worker revalidates after restart.
+- `batch_work` builds a private timeline candidate. If any selected narration/hybrid scene lacks a voice, it creates only those voices at new versioned paths, validating each before use. An error cleans up all generated voice files and keeps the original scene metadata, captions and final MP4. No old scene media is overwritten.
+- The claim-review gate runs before any required TTS; its fingerprint remains stable because the batch never changes narration, source IDs or evidence. The batch refuses an unexpected review rewrite. After validating all active assets, the worker recalculates starts once, builds captions once, exports OTIO once and renders once, then publishes the complete canonical timeline. Failed/cancelled jobs keep the pending edit for explicit retry. Schema stays v7.
+- The UI labels the expected work as Render only or TTS + render; the queued job stores the authoritative category for polling. No video provider is instantiated for a batch.
 
 ## 7. Current Scene Generation Flow
 
@@ -304,11 +314,12 @@ Important completed milestones:
 - scene clip/voice import, narration text and mode editing without unrelated model calls; immutable source assets and timeline v5 migration
 - Research v2 structured source evidence, optional SearXNG, safer article extraction, conflict review and numeric grounding
 - automated factual evidence review/repair gate before expensive generation and factual rerenders; timeline v7 migration
+- selected-scene batch transitions and audio-mode edits through one restart-safe job and final render
 - GitHub Actions frontend build + backend CPU tests
 
 ### Most recent completed development work
 
-**Automated factual evidence review** now sits between grounded planning and expensive media generation. Factual Ollama scenes are independently rechecked against the saved evidence pack, automatically repaired when a safe supported rewrite is possible, and reviewed again. Unresolved claims fail closed before video generation/final rendering. The approval record is persisted in timeline v7 and surfaced in the UI. This removes the mandatory manual review step while explicitly remaining weaker than human fact checking. GPU generation remains unverified. Next recommended task: focused scene batch editing for repeated render-only/editor operations.
+**Focused scene batch editing** now allows selected scenes to share one transition or audio mode update through one persistent job. The entire selection is validated before queueing, missing narration is created at new paths before activation, and the worker rebuilds captions and renders once. Errors keep the previous editable timeline and media. Claim review remains in effect without repeated reviews for unchanged narration. The frontend shows the expected execution cost. Timeline v7 remains unchanged. GPU generation remains unverified. Next recommended task: add Wan as a second modular video provider, keeping the existing LTX and preview adapters.
 
 ## 11. Important Source Files
 
@@ -385,11 +396,10 @@ When a GPU becomes available, the first validation should compare identical prom
 
 Current priority order:
 
-1. Focused scene batch editing for repeated safe operations
-2. Add another video provider such as Wan
-3. Real GPU validation of LTX Fast vs DFR Quality
-4. Quality tuning based on real generated outputs
-5. Social publishing/analytics only after generation quality is proven
+1. Add Wan as a second modular video provider
+2. Real GPU validation of LTX Fast vs DFR Quality
+3. Quality tuning based on real generated outputs
+4. Social publishing/analytics only after generation quality is proven
 
 ## 14. Development Rules for Future Agents
 

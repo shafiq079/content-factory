@@ -13,6 +13,7 @@ export type Scene = {
 type Source = {id:number; title:string; url:string};
 type Props = {
   scene:Scene; index:number; count:number; ready:boolean; videoProvider:string;
+  selected:boolean; onSelect:(sceneId:number,selected:boolean)=>void;
   sources?:Source[]; asset:(path:string)=>string;
   onJson:(sceneId:number,route:string,payload:Record<string,unknown>)=>Promise<void>;
   onUpload:(sceneId:number,kind:'clip'|'narration/upload',file:File,text?:string)=>Promise<void>;
@@ -21,7 +22,7 @@ type Props = {
   onMove:(sceneId:number,direction:-1|1)=>Promise<void>;
 };
 
-export default function SceneEditor({scene:s,index,count,ready,videoProvider,sources,asset,onJson,onUpload,onRegenerate,onTransition,onMove}:Props) {
+export default function SceneEditor({scene:s,index,count,ready,videoProvider,selected,onSelect,sources,asset,onJson,onUpload,onRegenerate,onTransition,onMove}:Props) {
   const [narration,setNarration] = useState<string|null>(null);
   const [prompt,setPrompt] = useState<string|null>(null);
   const [mode,setMode] = useState<AudioMode|null>(null);
@@ -32,7 +33,7 @@ export default function SceneEditor({scene:s,index,count,ready,videoProvider,sou
   const activeMode = mode ?? s.audio_mode ?? 'narration';
   const activeTransition = transition ?? s.transition ?? 'cut';
   return <article>
-    <div className="scene-heading"><strong>Scene {s.id}{s.beat?` · ${s.beat}`:''}</strong>
+    <div className="scene-heading"><label><input type="checkbox" checked={selected} onChange={e=>onSelect(s.id,e.target.checked)} /> <strong>Scene {s.id}{s.beat?` · ${s.beat}`:''}</strong></label>
       <small>{s.duration.toFixed(1)}s · {s.status} · clip: {s.clip_origin??'generated'}</small></div>
     {!!s.source_ids?.length && <div className="links">Sources: {s.source_ids.map(id=>{
       const source=sources?.find(item=>item.id===id);
