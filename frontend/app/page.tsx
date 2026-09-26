@@ -5,9 +5,11 @@ const API = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000';
 type CaptionStyle = 'classic' | 'bold' | 'minimal';
 type AudioMode = 'narration' | 'native' | 'hybrid';
 type GenerationMode = 'fast' | 'quality';
+type MusicTrack = {provider:'uploaded'; asset:string; enabled:boolean; volume:number; loop:boolean; fade_in:number; fade_out:number};
+type SFXTrack = {id:string; provider:'uploaded'; asset:string; enabled:boolean; start:number; duration?:number; volume:number; fade_in:number; fade_out:number};
 type Scene = {id:number; narration:string; visual_prompt:string; duration:number; status:string; beat?:string; continuity?:string; audio_mode?:AudioMode; generation_mode?:GenerationMode; clip?:string; source_ids?:number[]};
 type Source = {id:number; title:string; url:string; excerpt:string};
-type Project = {id:string; status:string; stage:string; error?:string; revision?:number; caption_style?:CaptionStyle; scenes:Scene[]; assets:Record<string,string>; idea?:string; hook?:string; script?:string; story_arc?:string; visual_bible?:string; research?:Source[]; request:{video_provider:string; voice_provider:string; planner_provider:string; generation_mode?:GenerationMode; language?:string; voice_id?:string; voice_speed?:number}};
+type Project = {id:string; status:string; stage:string; error?:string; revision?:number; caption_style?:CaptionStyle; scenes:Scene[]; assets:Record<string,string>; idea?:string; hook?:string; script?:string; story_arc?:string; visual_bible?:string; research?:Source[]; music?:MusicTrack|null; sfx?:SFXTrack[]; request:{video_provider:string; voice_provider:string; planner_provider:string; generation_mode?:GenerationMode; language?:string; voice_id?:string; voice_speed?:number}};
 
 export default function Home() {
   const [topic, setTopic] = useState('Black holes');
@@ -31,6 +33,16 @@ export default function Home() {
   const [audioModeEdit, setAudioModeEdit] = useState<Record<number, AudioMode>>({});
   const [projectVoiceId, setProjectVoiceId] = useState<string | null>(null);
   const [projectVoiceSpeed, setProjectVoiceSpeed] = useState<number | null>(null);
+  const [musicFile, setMusicFile] = useState<File | null>(null);
+  const [musicVolume, setMusicVolume] = useState<number | null>(null);
+  const [musicLoop, setMusicLoop] = useState<boolean | null>(null);
+  const [musicFadeIn, setMusicFadeIn] = useState<number | null>(null);
+  const [musicFadeOut, setMusicFadeOut] = useState<number | null>(null);
+  const [sfxFile, setSfxFile] = useState<File | null>(null);
+  const [sfxStart, setSfxStart] = useState(0);
+  const [sfxVolume, setSfxVolume] = useState(0.7);
+  const [sfxFadeIn, setSfxFadeIn] = useState(0);
+  const [sfxFadeOut, setSfxFadeOut] = useState(0.3);
   useEffect(() => {
     if (!id) return;
     let cancelled = false;
@@ -83,6 +95,73 @@ export default function Home() {
       setProject(await res.json()); setProjectVoiceId(null); setProjectVoiceSpeed(null);
     } catch(e) { setError(String(e)); }
   }
+  async function uploadMusic() {
+    if (!id || !musicFile) return;
+    setError('');
+    const form = new FormData();
+    form.append('file', musicFile);
+    form.append('volume', String(musicVolume ?? project?.music?.volume ?? 0.2));
+    form.append('loop', String(musicLoop ?? project?.music?.loop ?? true));
+    form.append('fade_in', String(musicFadeIn ?? project?.music?.fade_in ?? 0.5));
+    form.append('fade_out', String(musicFadeOut ?? project?.music?.fade_out ?? 3));
+    try {
+      const res = await fetch(API+'/projects/'+id+'/music', {method:'POST', body:form});
+      if (!res.ok) throw new Error(await res.text());
+      setProject(await res.json()); setMusicFile(null);
+    } catch(e) { setError(String(e)); }
+  }
+
+  async function updateMusic() {
+    if (!id || !project?.music) return;
+    setError('');
+    try {
+      const res = await fetch(API+'/projects/'+id+'/music/settings', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({
+        enabled:true,
+        volume:musicVolume ?? project.music.volume,
+        loop:musicLoop ?? project.music.loop,
+        fade_in:musicFadeIn ?? project.music.fade_in,
+        fade_out:musicFadeOut ?? project.music.fade_out
+      })});
+      if (!res.ok) throw new Error(await res.text());
+      setProject(await res.json());
+    } catch(e) { setError(String(e)); }
+  }
+
+  async function removeMusic() {
+    if (!id || !project?.music) return;
+    setError('');
+    try {
+      const res = await fetch(API+'/projects/'+id+'/music/remove', {method:'POST'});
+      if (!res.ok) throw new Error(await res.text());
+      setProject(await res.json()); setMusicVolume(null); setMusicLoop(null); setMusicFadeIn(null); setMusicFadeOut(null);
+    } catch(e) { setError(String(e)); }
+  }
+
+  async function uploadSfx() {
+    if (!id || !sfxFile) return;
+    setError('');
+    const form = new FormData();
+    form.append('file', sfxFile);
+    form.append('start', String(sfxStart));
+    form.append('volume', String(sfxVolume));
+    form.append('fade_in', String(sfxFadeIn));
+    form.append('fade_out', String(sfxFadeOut));
+    try {
+      const res = await fetch(API+'/projects/'+id+'/sfx', {method:'POST', body:form});
+      if (!res.ok) throw new Error(await res.text());
+      setProject(await res.json()); setSfxFile(null);
+    } catch(e) { setError(String(e)); }
+  }
+
+  async function removeSfx(effectId:string) {
+    if (!id) return;
+    setError('');
+    try {
+      const res = await fetch(API+'/projects/'+id+'/sfx/'+effectId+'/remove', {method:'POST'});
+      if (!res.ok) throw new Error(await res.text());
+      setProject(await res.json());
+    } catch(e) { setError(String(e)); }
+  }
   async function renderAgain() {
     if (!id || !project) return;
     setError('');
@@ -114,7 +193,7 @@ export default function Home() {
         {(project.status==='queued' || project.status==='running') && <button className="secondary" onClick={()=>jobAction('cancel')}>Cancel job</button>}
         {(project.status==='failed' || project.status==='cancelled') && <button className="secondary" onClick={()=>jobAction('retry')}>Retry job</button>}
         {project.error && <p className="error">{project.error}</p>}
-        {project.status==='complete' && <><video controls src={asset('final.mp4')+`?v=${project.revision??0}`} playsInline /><div className="links"><a href={asset('final.mp4')}>Final MP4</a><a href={asset('timeline.json')}>Timeline JSON</a><a href={asset('captions.srt')}>Captions SRT</a></div>{project.request.voice_provider==='kokoro' && <div className="story"><h3>Narration voice</h3><div className="row"><label>Kokoro voice ID<input value={projectVoiceId ?? project.request.voice_id ?? ''} onChange={e=>setProjectVoiceId(e.target.value)} /></label><label>Voice speed<input type="number" min="0.5" max="2" step="0.05" value={projectVoiceSpeed ?? project.request.voice_speed ?? 1} onChange={e=>setProjectVoiceSpeed(Number(e.target.value))} /></label></div><p className="note">Applying new voice settings regenerates narration and captions, then rerenders using the existing scene clips. It does not call the video model.</p><button className="secondary" onClick={applyVoice}>Apply voice settings</button></div>}<label>Caption style<select value={captionStyle ?? project.caption_style ?? 'classic'} onChange={e=>setCaptionStyle(e.target.value as CaptionStyle)}><option value="classic">Classic</option><option value="bold">Bold</option><option value="minimal">Minimal</option></select></label><button className="secondary" onClick={renderAgain}>Render again with saved scenes</button></>}
+        {project.status==='complete' && <><video controls src={asset('final.mp4')+`?v=${project.revision??0}`} playsInline /><div className="links"><a href={asset('final.mp4')}>Final MP4</a><a href={asset('timeline.json')}>Timeline JSON</a><a href={asset('captions.srt')}>Captions SRT</a></div>{project.request.voice_provider==='kokoro' && <div className="story"><h3>Narration voice</h3><div className="row"><label>Kokoro voice ID<input value={projectVoiceId ?? project.request.voice_id ?? ''} onChange={e=>setProjectVoiceId(e.target.value)} /></label><label>Voice speed<input type="number" min="0.5" max="2" step="0.05" value={projectVoiceSpeed ?? project.request.voice_speed ?? 1} onChange={e=>setProjectVoiceSpeed(Number(e.target.value))} /></label></div><p className="note">Applying new voice settings regenerates narration and captions, then rerenders using the existing scene clips. It does not call the video model.</p><button className="secondary" onClick={applyVoice}>Apply voice settings</button></div>}<div className="story"><h3>Background music</h3><label>Music file<input type="file" accept=".mp3,.m4a,.aac,.wav,.flac,.ogg,.opus,audio/*" onChange={e=>setMusicFile(e.target.files?.[0]??null)} /></label><div className="row"><label>Volume<input type="number" min="0" max="1" step="0.05" value={musicVolume ?? project.music?.volume ?? 0.2} onChange={e=>setMusicVolume(Number(e.target.value))} /></label><label>Loop<select value={String(musicLoop ?? project.music?.loop ?? true)} onChange={e=>setMusicLoop(e.target.value==='true')}><option value="true">Loop to video length</option><option value="false">Play once</option></select></label></div><div className="row"><label>Fade in (s)<input type="number" min="0" max="30" step="0.1" value={musicFadeIn ?? project.music?.fade_in ?? 0.5} onChange={e=>setMusicFadeIn(Number(e.target.value))} /></label><label>Fade out (s)<input type="number" min="0" max="30" step="0.1" value={musicFadeOut ?? project.music?.fade_out ?? 3} onChange={e=>setMusicFadeOut(Number(e.target.value))} /></label></div>{project.music && <div className="links"><a href={asset(project.music.asset)} target="_blank" rel="noopener noreferrer">Current music ↗</a></div>}<div className="links"><button className="secondary" disabled={!musicFile} onClick={uploadMusic}>{project.music?'Replace music':'Add music'}</button>{project.music && <><button className="secondary" onClick={updateMusic}>Apply music settings</button><button className="secondary" onClick={removeMusic}>Remove music</button></>}</div><p className="note">Music is mixed after scene narration/native audio. Short tracks can loop; fades and volume are stored in the editable timeline.</p></div><div className="story"><h3>Sound effects</h3><label>SFX file<input type="file" accept=".mp3,.m4a,.aac,.wav,.flac,.ogg,.opus,audio/*" onChange={e=>setSfxFile(e.target.files?.[0]??null)} /></label><div className="row"><label>Start (s)<input type="number" min="0" step="0.1" value={sfxStart} onChange={e=>setSfxStart(Number(e.target.value))} /></label><label>Volume<input type="number" min="0" max="1" step="0.05" value={sfxVolume} onChange={e=>setSfxVolume(Number(e.target.value))} /></label></div><div className="row"><label>Fade in (s)<input type="number" min="0" max="30" step="0.1" value={sfxFadeIn} onChange={e=>setSfxFadeIn(Number(e.target.value))} /></label><label>Fade out (s)<input type="number" min="0" max="30" step="0.1" value={sfxFadeOut} onChange={e=>setSfxFadeOut(Number(e.target.value))} /></label></div><button className="secondary" disabled={!sfxFile} onClick={uploadSfx}>Add sound effect</button>{!!project.sfx?.length && <div className="scenes">{project.sfx.map(effect=><article key={effect.id}><div className="scene-heading"><strong>SFX</strong><small>{effect.start.toFixed(1)}s · volume {effect.volume.toFixed(2)}</small></div><div className="links"><a href={asset(effect.asset)} target="_blank" rel="noopener noreferrer">Audio asset ↗</a><button className="secondary" onClick={()=>removeSfx(effect.id)}>Remove</button></div></article>)}</div>}<p className="note">SFX are timeline overlays. Their start time and mix settings are saved separately from the scene clips.</p></div><label>Caption style<select value={captionStyle ?? project.caption_style ?? 'classic'} onChange={e=>setCaptionStyle(e.target.value as CaptionStyle)}><option value="classic">Classic</option><option value="bold">Bold</option><option value="minimal">Minimal</option></select></label><button className="secondary" onClick={renderAgain}>Render again with saved scenes</button></>}
         {project.script && <div className="story"><h3>Idea and script</h3><p><strong>{project.idea}</strong></p>{project.story_arc && <p><strong>Story arc:</strong> {project.story_arc}</p>}{project.visual_bible && <p><strong>Visual bible:</strong> {project.visual_bible}</p>}<p>{project.script}</p></div>}
         {!!project.research?.length && <div className="story"><h3>Research notes</h3><p className="note">Shortened Wikipedia excerpts. Source links credit contributors; text is under <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>. Review claims before publishing.</p>{project.research.map(source=><p key={source.id}><a href={source.url} target="_blank" rel="noopener noreferrer">{source.title} ↗</a><br/>{source.excerpt}</p>)}</div>}
         <div className="scenes">{project.scenes.map(s=><article key={s.id}><div className="scene-heading"><strong>Scene {s.id}{s.beat?` · ${s.beat}`:''}</strong><small>{s.duration.toFixed(1)}s · {s.status}{project.request.video_provider==='ltx25'?` · ${s.generation_mode??project.request.generation_mode??'fast'}`:''}</small></div><p>{s.narration}</p>{!!s.source_ids?.length && <div className="links">Sources: {s.source_ids.map(sourceId=>{const source=project.research?.find(item=>item.id===sourceId);return source && <a key={sourceId} href={source.url} target="_blank" rel="noopener noreferrer">{source.title} ↗</a>;})}</div>}<label>Audio<select value={audioModeEdit[s.id]??s.audio_mode??'narration'} onChange={e=>setAudioModeEdit({...audioModeEdit,[s.id]:e.target.value as AudioMode})}><option value="narration">Narration</option><option value="hybrid" disabled={project.request.video_provider!=='ltx25'}>Hybrid · narration + native ambience</option><option value="native" disabled={project.request.video_provider!=='ltx25'}>Native · LTX audio</option></select></label>{s.continuity && <p className="note"><strong>Continuity:</strong> {s.continuity}</p>}<textarea aria-label={`Scene ${s.id} visual prompt`} value={edit[s.id]??s.visual_prompt} onChange={e=>setEdit({...edit,[s.id]:e.target.value})} rows={3}/>{s.clip && <a href={asset(s.clip)}>View clip ↗</a>}{project.status==='complete' && <button className="secondary" onClick={()=>redo(s)}>Regenerate scene</button>}</article>)}</div>
