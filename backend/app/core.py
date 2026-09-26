@@ -493,7 +493,10 @@ def ensure_claim_review(manifest: dict, request: Request,
             if verdict == "revise":
                 replacement = str(item.get("replacement_narration") or "").strip()
                 max_words = math.ceil((scene.get("planned_duration") or scene["duration"]) * 2.6)
-                if not replacement or len(replacement.split()) > max_words:
+                if scene.get("voice_origin") == "uploaded" and scene.get("voice"):
+                    verdict = "blocked"
+                    reason = reason or "Uploaded narration audio cannot be silently rewritten; replace the audio or use generated narration."
+                elif not replacement or len(replacement.split()) > max_words:
                     verdict = "blocked"
                     reason = reason or "Reviewer could not provide a speakable evidence-backed revision."
                 elif not review_ids and (bool(research.NUMBERS.search(replacement)) or bool(item.get("factual"))):
@@ -1334,12 +1337,17 @@ def scene_narration_work(project_id: str, scene_id: int,
     manifest = load(project_id)
     req = Request.model_validate(manifest["request"])
     scene = next(s for s in manifest["scenes"] if s["id"] == scene_id)
+
+    def save(stage: str) -> None:
+        manifest["stage"] = stage
+        atomic_write(folder / "timeline.json", manifest)
+
     try:
         if is_cancelled():
             raise JobCancelled("Cancellation requested")
         manifest.update(status="running", stage=f"reviewing narration scene {scene_id}", error=None)
         atomic_write(folder / "timeline.json", manifest)
-        ensure_claim_review(manifest, req, lambda stage: (manifest.__setitem__("stage", stage), atomic_write(folder / "timeline.json", manifest)))
+        ensure_claim_review(manifest, req, save)
         providers.preflight_voice(req)
         manifest.update(status="running", stage=f"voicing scene {scene_id}", error=None)
         atomic_write(folder / "timeline.json", manifest)
