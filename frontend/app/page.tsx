@@ -1,6 +1,7 @@
 'use client';
 import { useEffect, useState } from 'react';
 import SceneEditor, {type Scene, type TransitionMode, type AudioMode} from './SceneEditor';
+import TimelineWorkspace from './TimelineWorkspace';
 
 const API = process.env.NEXT_PUBLIC_API_URL?.replace(/\/+$/, '');
 if (!API) {
@@ -34,6 +35,7 @@ export default function Home() {
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [selectedScenes, setSelectedScenes] = useState<number[]>([]);
+  const [activeSceneId, setActiveSceneId] = useState<number|null>(null);
   const [batchOperation, setBatchOperation] = useState<'set_transition'|'set_audio_mode'>('set_transition');
   const [batchTransition, setBatchTransition] = useState<TransitionMode>('cut');
   const [batchDuration, setBatchDuration] = useState(0.8);
@@ -65,7 +67,7 @@ export default function Home() {
     return () => { cancelled = true; clearInterval(timer); };
   }, [id]);
   async function start() {
-    setBusy(true); setError(''); setProject(null); setSelectedScenes([]);
+    setBusy(true); setError(''); setProject(null); setSelectedScenes([]); setActiveSceneId(null);
     try {
       const res = await fetch(`${API}/projects`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({topic,duration,language,style,instructions,video_provider:video,generation_mode:video==='ltx25'?generationMode:'fast',voice_provider:voice,voice_id:voice==='kokoro'?voiceId:'',voice_speed:voice==='kokoro'?voiceSpeed:1,planner_provider:planner,research_provider:research})});
       if (!res.ok) throw new Error(await res.text());
@@ -216,19 +218,30 @@ export default function Home() {
     } catch(e) { setError(String(e)); }
   }
 
-  async function moveScene(sceneId:number, direction:-1|1) {
+  function setSceneSelected(sceneId:number, selected:boolean) {
+    setSelectedScenes(current=>selected
+      ? [...new Set([...current,sceneId])]
+      : current.filter(id=>id!==sceneId));
+  }
+
+  async function reorderScenes(order:number[]) {
     if (!id || !project) return;
-    const order = project.scenes.map(scene=>scene.id);
-    const index = order.indexOf(sceneId);
-    const nextIndex = index + direction;
-    if (index < 0 || nextIndex < 0 || nextIndex >= order.length) return;
-    [order[index], order[nextIndex]] = [order[nextIndex], order[index]];
     setError('');
     try {
       const res = await fetch(API+'/projects/'+id+'/timeline', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({scene_order:order})});
       if (!res.ok) throw new Error(await res.text());
       setProject(await res.json());
     } catch(e) { setError(String(e)); }
+  }
+
+  async function moveScene(sceneId:number, direction:-1|1) {
+    if (!project) return;
+    const order = project.scenes.map(scene=>scene.id);
+    const index = order.indexOf(sceneId);
+    const nextIndex = index + direction;
+    if (index < 0 || nextIndex < 0 || nextIndex >= order.length) return;
+    [order[index], order[nextIndex]] = [order[nextIndex], order[index]];
+    await reorderScenes(order);
   }
   async function renderAgain() {
     if (!id || !project) return;
@@ -240,9 +253,46 @@ export default function Home() {
     } catch(e) { setError(String(e)); }
   }
   useEffect(() => { const query = new URLSearchParams(window.location.search).get('project'); if (query) setId(query); }, []);
+  useEffect(() => {
+    if (!project?.scenes.length) {
+      setActiveSceneId(null);
+      return;
+    }
+    if (!project.scenes.some(scene=>scene.id===activeSceneId)) setActiveSceneId(project.scenes[0].id);
+  }, [project?.scenes, activeSceneId]);
+
   const asset = (path:string) => `${API}/projects/${id}/assets/${path}`;
+  const activeScene = project?.scenes.find(scene=>scene.id===activeSceneId) ?? project?.scenes[0] ?? null;
+  const activeSceneIndex = activeScene && project ? project.scenes.findIndex(scene=>scene.id===activeScene.id) : -1;
+
   return <main>
     <header><span className="eyebrow">LOCAL VIDEO WORKSHOP / PHASE 1</span><h1>Content Factory</h1><p>Plan scenes, generate clips, add narration and captions, and keep every piece editable.</p></header>
+    {project && project.scenes.length>0 && <TimelineWorkspace
+      project={project}
+      asset={asset}
+      activeSceneId={activeScene?.id ?? null}
+      onActiveScene={setActiveSceneId}
+      selectedScenes={selectedScenes}
+      onSelectScene={setSceneSelected}
+      onReorder={reorderScenes}
+      inspector={activeScene && activeSceneIndex>=0 ? <SceneEditor
+        key={`${activeScene.id}-${project.revision??0}`}
+        scene={activeScene}
+        index={activeSceneIndex}
+        count={project.scenes.length}
+        ready={project.status==='complete'}
+        selected={selectedScenes.includes(activeScene.id)}
+        onSelect={setSceneSelected}
+        videoProvider={project.request.video_provider}
+        sources={project.research}
+        asset={asset}
+        onJson={sceneAction}
+        onUpload={uploadSceneAsset}
+        onRegenerate={redo}
+        onTransition={updateTransition}
+        onMove={moveScene}
+      /> : null}
+    />}
     <section className="grid"><div className="panel"><h2>Create a project</h2>
       <label>Topic<input value={topic} onChange={e=>setTopic(e.target.value)} /></label>
       <div className="row"><label>Duration (seconds)<input type="number" min="10" max="120" value={duration} onChange={e=>setDuration(Number(e.target.value))} /></label><label>Language<input value={language} onChange={e=>setLanguage(e.target.value)} /></label></div>
@@ -261,7 +311,7 @@ export default function Home() {
         {(project.status==='queued' || project.status==='running') && <button className="secondary" onClick={()=>jobAction('cancel')}>Cancel job</button>}
         {(project.status==='failed' || project.status==='cancelled') && <button className="secondary" onClick={()=>jobAction('retry')}>Retry job</button>}
         {project.error && <p className="error">{project.error}</p>}
-        {project.status==='complete' && <><video controls src={asset('final.mp4')+`?v=${project.revision??0}`} playsInline /><div className="links"><a href={asset('final.mp4')}>Final MP4</a><a href={asset('timeline.json')}>Timeline JSON</a><a href={asset('captions.srt')}>Captions SRT</a></div>{project.request.voice_provider==='kokoro' && <div className="story"><h3>Narration voice</h3><div className="row"><label>Kokoro voice ID<input value={projectVoiceId ?? project.request.voice_id ?? ''} onChange={e=>setProjectVoiceId(e.target.value)} /></label><label>Voice speed<input type="number" min="0.5" max="2" step="0.05" value={projectVoiceSpeed ?? project.request.voice_speed ?? 1} onChange={e=>setProjectVoiceSpeed(Number(e.target.value))} /></label></div><p className="note">Applying new voice settings regenerates narration and captions, then rerenders using the existing scene clips. It does not call the video model.</p><button className="secondary" onClick={applyVoice}>Apply voice settings</button></div>}<div className="story"><h3>Background music</h3><label>Music file<input type="file" accept=".mp3,.m4a,.aac,.wav,.flac,.ogg,.opus,audio/*" onChange={e=>setMusicFile(e.target.files?.[0]??null)} /></label><div className="row"><label>Volume<input type="number" min="0" max="1" step="0.05" value={musicVolume ?? project.music?.volume ?? 0.2} onChange={e=>setMusicVolume(Number(e.target.value))} /></label><label>Loop<select value={String(musicLoop ?? project.music?.loop ?? true)} onChange={e=>setMusicLoop(e.target.value==='true')}><option value="true">Loop to video length</option><option value="false">Play once</option></select></label></div><div className="row"><label>Fade in (s)<input type="number" min="0" max="30" step="0.1" value={musicFadeIn ?? project.music?.fade_in ?? 0.5} onChange={e=>setMusicFadeIn(Number(e.target.value))} /></label><label>Fade out (s)<input type="number" min="0" max="30" step="0.1" value={musicFadeOut ?? project.music?.fade_out ?? 3} onChange={e=>setMusicFadeOut(Number(e.target.value))} /></label></div>{project.music && <div className="links"><a href={asset(project.music.asset)} target="_blank" rel="noopener noreferrer">Current music ↗</a></div>}<div className="links"><button className="secondary" disabled={!musicFile} onClick={uploadMusic}>{project.music?'Replace music':'Add music'}</button>{project.music && <><button className="secondary" onClick={updateMusic}>Apply music settings</button><button className="secondary" onClick={removeMusic}>Remove music</button></>}</div><p className="note">Music is mixed after scene narration/native audio. Short tracks can loop; fades and volume are stored in the editable timeline.</p></div><div className="story"><h3>Sound effects</h3><label>SFX file<input type="file" accept=".mp3,.m4a,.aac,.wav,.flac,.ogg,.opus,audio/*" onChange={e=>setSfxFile(e.target.files?.[0]??null)} /></label><div className="row"><label>Start (s)<input type="number" min="0" step="0.1" value={sfxStart} onChange={e=>setSfxStart(Number(e.target.value))} /></label><label>Volume<input type="number" min="0" max="1" step="0.05" value={sfxVolume} onChange={e=>setSfxVolume(Number(e.target.value))} /></label></div><div className="row"><label>Fade in (s)<input type="number" min="0" max="30" step="0.1" value={sfxFadeIn} onChange={e=>setSfxFadeIn(Number(e.target.value))} /></label><label>Fade out (s)<input type="number" min="0" max="30" step="0.1" value={sfxFadeOut} onChange={e=>setSfxFadeOut(Number(e.target.value))} /></label></div><button className="secondary" disabled={!sfxFile} onClick={uploadSfx}>Add sound effect</button>{!!project.sfx?.length && <div className="scenes">{project.sfx.map(effect=><article key={effect.id}><div className="scene-heading"><strong>SFX</strong><small>{effect.start.toFixed(1)}s · volume {effect.volume.toFixed(2)}</small></div><div className="links"><a href={asset(effect.asset)} target="_blank" rel="noopener noreferrer">Audio asset ↗</a><button className="secondary" onClick={()=>removeSfx(effect.id)}>Remove</button></div></article>)}</div>}<p className="note">SFX are timeline overlays. Their start time and mix settings are saved separately from the scene clips.</p></div><label>Caption style<select value={captionStyle ?? project.caption_style ?? 'classic'} onChange={e=>setCaptionStyle(e.target.value as CaptionStyle)}><option value="classic">Classic</option><option value="bold">Bold</option><option value="minimal">Minimal</option></select></label><button className="secondary" onClick={renderAgain}>Render again with saved scenes</button></>}
+        {project.status==='complete' && <><p className="note">Use the Program monitor and visual timeline above for playback, seeking and scene selection.</p><div className="links"><a href={asset('final.mp4')}>Final MP4</a><a href={asset('timeline.json')}>Timeline JSON</a><a href={asset('captions.srt')}>Captions SRT</a></div>{project.request.voice_provider==='kokoro' && <div className="story"><h3>Narration voice</h3><div className="row"><label>Kokoro voice ID<input value={projectVoiceId ?? project.request.voice_id ?? ''} onChange={e=>setProjectVoiceId(e.target.value)} /></label><label>Voice speed<input type="number" min="0.5" max="2" step="0.05" value={projectVoiceSpeed ?? project.request.voice_speed ?? 1} onChange={e=>setProjectVoiceSpeed(Number(e.target.value))} /></label></div><p className="note">Applying new voice settings regenerates narration and captions, then rerenders using the existing scene clips. It does not call the video model.</p><button className="secondary" onClick={applyVoice}>Apply voice settings</button></div>}<div className="story"><h3>Background music</h3><label>Music file<input type="file" accept=".mp3,.m4a,.aac,.wav,.flac,.ogg,.opus,audio/*" onChange={e=>setMusicFile(e.target.files?.[0]??null)} /></label><div className="row"><label>Volume<input type="number" min="0" max="1" step="0.05" value={musicVolume ?? project.music?.volume ?? 0.2} onChange={e=>setMusicVolume(Number(e.target.value))} /></label><label>Loop<select value={String(musicLoop ?? project.music?.loop ?? true)} onChange={e=>setMusicLoop(e.target.value==='true')}><option value="true">Loop to video length</option><option value="false">Play once</option></select></label></div><div className="row"><label>Fade in (s)<input type="number" min="0" max="30" step="0.1" value={musicFadeIn ?? project.music?.fade_in ?? 0.5} onChange={e=>setMusicFadeIn(Number(e.target.value))} /></label><label>Fade out (s)<input type="number" min="0" max="30" step="0.1" value={musicFadeOut ?? project.music?.fade_out ?? 3} onChange={e=>setMusicFadeOut(Number(e.target.value))} /></label></div>{project.music && <div className="links"><a href={asset(project.music.asset)} target="_blank" rel="noopener noreferrer">Current music ↗</a></div>}<div className="links"><button className="secondary" disabled={!musicFile} onClick={uploadMusic}>{project.music?'Replace music':'Add music'}</button>{project.music && <><button className="secondary" onClick={updateMusic}>Apply music settings</button><button className="secondary" onClick={removeMusic}>Remove music</button></>}</div><p className="note">Music is mixed after scene narration/native audio. Short tracks can loop; fades and volume are stored in the editable timeline.</p></div><div className="story"><h3>Sound effects</h3><label>SFX file<input type="file" accept=".mp3,.m4a,.aac,.wav,.flac,.ogg,.opus,audio/*" onChange={e=>setSfxFile(e.target.files?.[0]??null)} /></label><div className="row"><label>Start (s)<input type="number" min="0" step="0.1" value={sfxStart} onChange={e=>setSfxStart(Number(e.target.value))} /></label><label>Volume<input type="number" min="0" max="1" step="0.05" value={sfxVolume} onChange={e=>setSfxVolume(Number(e.target.value))} /></label></div><div className="row"><label>Fade in (s)<input type="number" min="0" max="30" step="0.1" value={sfxFadeIn} onChange={e=>setSfxFadeIn(Number(e.target.value))} /></label><label>Fade out (s)<input type="number" min="0" max="30" step="0.1" value={sfxFadeOut} onChange={e=>setSfxFadeOut(Number(e.target.value))} /></label></div><button className="secondary" disabled={!sfxFile} onClick={uploadSfx}>Add sound effect</button>{!!project.sfx?.length && <div className="scenes">{project.sfx.map(effect=><article key={effect.id}><div className="scene-heading"><strong>SFX</strong><small>{effect.start.toFixed(1)}s · volume {effect.volume.toFixed(2)}</small></div><div className="links"><a href={asset(effect.asset)} target="_blank" rel="noopener noreferrer">Audio asset ↗</a><button className="secondary" onClick={()=>removeSfx(effect.id)}>Remove</button></div></article>)}</div>}<p className="note">SFX are timeline overlays. Their start time and mix settings are saved separately from the scene clips.</p></div><label>Caption style<select value={captionStyle ?? project.caption_style ?? 'classic'} onChange={e=>setCaptionStyle(e.target.value as CaptionStyle)}><option value="classic">Classic</option><option value="bold">Bold</option><option value="minimal">Minimal</option></select></label><button className="secondary" onClick={renderAgain}>Render again with saved scenes</button></>}
         {project.script && <div className="story"><h3>Idea and script</h3><p><strong>{project.idea}</strong></p>{project.story_arc && <p><strong>Story arc:</strong> {project.story_arc}</p>}{project.visual_bible && <p><strong>Visual bible:</strong> {project.visual_bible}</p>}<p>{project.script}</p></div>}
         {!!project.research?.length && <div className="story"><h3>Research evidence</h3>
           <p className="note">Source passages are context for the script. The automated evidence review below checks whether narration appears supported by the saved evidence, but it does not prove the sources are true or complete.</p>
@@ -302,12 +352,6 @@ export default function Home() {
             : 'Render only: use saved clips and audio.'} One job and one final render; no video generation. Fades cannot include the first scene. Native requires audio in every selected clip. The server validates all scenes before queueing.</p>
           <button className="secondary" disabled={project.status!=='complete'||!selectedScenes.length} onClick={applyBatch}>Apply to {selectedScenes.length} scenes</button>
         </div>}
-        <div className="scenes">{project.scenes.map((scene,index)=><SceneEditor key={`${scene.id}-${project.revision??0}`} scene={scene}
-          index={index} count={project.scenes.length} ready={project.status==='complete'}
-          selected={selectedScenes.includes(scene.id)} onSelect={(sceneId,selected)=>setSelectedScenes(current=>selected?[...new Set([...current,sceneId])]:current.filter(id=>id!==sceneId))}
-          videoProvider={project.request.video_provider} sources={project.research} asset={asset}
-          onJson={sceneAction} onUpload={uploadSceneAsset} onRegenerate={redo}
-          onTransition={updateTransition} onMove={moveScene} />)}</div>
       </>}
     </div></section>{error && <div role="alert" className="error">{error}</div>}
     <footer>All project media and prompts are stored locally. The preview is a pipeline test; it is not AI video.</footer>
