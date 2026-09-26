@@ -90,7 +90,7 @@ def change_project_voice(project_id: str, edit: VoiceEdit):
             "voice_id": edit.voice_id,
             "voice_speed": edit.voice_speed,
         })
-        providers.preflight(request)
+        providers.preflight_voice(request)
     except FileNotFoundError:
         raise HTTPException(404, "Project not found")
     except ValueError as exc:
