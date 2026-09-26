@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from .research import Source
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 class Scene(BaseModel):
@@ -21,7 +21,8 @@ class Scene(BaseModel):
     narration: str = Field(min_length=1)
     visual_prompt: str = Field(min_length=1)
     camera: str = "static"
-    transition: str = "cut"
+    transition: Literal["cut", "fade", "fade_white"] = "cut"
+    transition_duration: float = Field(default=0.0, ge=0, le=2.0)
     beat: Literal["hook", "setup", "build", "reveal", "payoff", "cta", "ending"] = "build"
     continuity: str = ""
     audio_mode: Literal["narration", "native", "hybrid"] = "narration"
@@ -58,7 +59,7 @@ class SFXTrack(BaseModel):
 class Timeline(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    schema_version: Literal[3]
+    schema_version: Literal[4]
     id: str = Field(pattern=r"^[a-f0-9]{32}$")
     request: dict
     status: Literal["queued", "running", "failed", "cancelled", "complete"]
@@ -121,13 +122,27 @@ def validate_plan(plan: dict, sources: list[Source], duration: int) -> dict:
 def migrate_timeline(data: dict) -> dict:
     """Upgrade older manifests in place; refuse unknown future formats."""
     version = data.get("schema_version", 1)
-    if version not in (1, 2, SCHEMA_VERSION):
+    if version not in (1, 2, 3, SCHEMA_VERSION):
         raise ValueError(f"Unsupported timeline schema version: {version}")
     if version != SCHEMA_VERSION:
         data = {**data, "schema_version": SCHEMA_VERSION}
     if "script" not in data:
         data = {**data, "script": " ".join(s.get("narration", "") for s in data.get("scenes", [])),
                 "hook": data.get("scenes", [{}])[0].get("narration", "") if data.get("scenes") else ""}
+    scenes = []
+    for index, scene in enumerate(data.get("scenes", [])):
+        item = dict(scene)
+        transition = item.get("transition", "cut")
+        if transition not in ("cut", "fade", "fade_white"):
+            transition = "cut"
+        if index == 0:
+            transition = "cut"
+        item["transition"] = transition
+        item.setdefault("transition_duration", 0.0 if transition == "cut" else 0.8)
+        if transition == "cut":
+            item["transition_duration"] = 0.0
+        scenes.append(item)
+    data = {**data, "scenes": scenes}
     data.setdefault("music", None)
     data.setdefault("sfx", [])
     return Timeline.model_validate(data).model_dump()
