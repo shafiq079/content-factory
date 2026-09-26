@@ -60,7 +60,7 @@ Typical output is a 30–120 second vertical video, especially 60–120 second r
 - Filesystem project storage
 - Pydantic request/timeline contracts
 - CPU test suite through GitHub Actions
-- Prototype/dev CORS is intentionally wildcard (`allow_origins=["*"]`, credentials disabled) so Codespaces, localhost and temporary preview origins work without per-origin code changes. Before any public production deployment, replace this with an explicit origin allowlist and authentication.
+- Runtime URLs are environment-driven: `frontend/.env.local` supplies `NEXT_PUBLIC_API_URL`; `backend/.env` supplies `FRONTEND_URL` and `CORS_ALLOW_ORIGINS`. The committed prototype backend env currently uses `CORS_ALLOW_ORIGINS=*` with credentials disabled so Codespaces/localhost/temporary preview origins work without source edits. A new Codespace only requires editing the env values and restarting services. Before public production, change the env allowlist and add authentication; do not hardcode deployment URLs in application code.
 
 ### AI / Media
 - Planner: Ollama-compatible local LLM

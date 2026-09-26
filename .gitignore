@@ -1,4 +1,5 @@
 .env
+!backend/.env
 .venv/
 node_modules/
 .next/

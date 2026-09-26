@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+import os
 import threading
 import uuid
 from typing import Annotated, Literal
@@ -28,15 +29,22 @@ async def lifespan(application: FastAPI):
         worker.join(timeout=1)
 
 
+def cors_origins() -> list[str]:
+    raw = os.getenv("CORS_ALLOW_ORIGINS", "").strip()
+    if not raw:
+        raw = os.getenv("FRONTEND_URL", "").strip()
+    if not raw:
+        raise RuntimeError("Set CORS_ALLOW_ORIGINS or FRONTEND_URL in backend/.env")
+    origins = [item.strip() for item in raw.split(",") if item.strip()]
+    if "*" in origins:
+        return ["*"]
+    return origins
+
+
 app = FastAPI(title="Content Factory", version="0.2.0", lifespan=lifespan)
-# Development/prototype mode is intentionally origin-agnostic so the frontend can
-# call the API from localhost, GitHub Codespaces, LAN hosts, or other temporary
-# preview origins without per-environment CORS edits. Keep credentials disabled.
-# Replace this wildcard policy with an explicit production allowlist before
-# exposing the service publicly.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=cors_origins(),
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],

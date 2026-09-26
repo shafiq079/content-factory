@@ -4,7 +4,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from app import core
-from app.main import app
+from app.main import app, cors_origins
 
 
 def test_cors_allows_arbitrary_preview_origin(monkeypatch, tmp_path: Path):
@@ -23,3 +23,12 @@ def test_cors_allows_arbitrary_preview_origin(monkeypatch, tmp_path: Path):
     assert response.headers["access-control-allow-origin"] == "*"
     assert "POST" in response.headers["access-control-allow-methods"]
     assert "content-type" in response.headers["access-control-allow-headers"].lower()
+
+
+def test_cors_origins_are_environment_driven(monkeypatch):
+    monkeypatch.setenv("CORS_ALLOW_ORIGINS", "https://one.example, https://two.example")
+    assert cors_origins() == ["https://one.example", "https://two.example"]
+
+    monkeypatch.delenv("CORS_ALLOW_ORIGINS")
+    monkeypatch.setenv("FRONTEND_URL", "https://frontend.example")
+    assert cors_origins() == ["https://frontend.example"]
