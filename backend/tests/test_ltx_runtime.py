@@ -52,7 +52,7 @@ def test_ltx_runtime_reuses_mode_and_switches_between_fast_and_quality(monkeypat
         return 1
 
     def fake_build(paths, mode):
-        loads.append((mode, tuple(str(paths[name]) for name in paths)))
+        loads.append((mode, tuple(paths)))
         return FakePipeline(mode), fake_encode, fake_chunks
 
     monkeypatch.setattr(core.LTX25Video, "_runtime", None)
@@ -80,7 +80,8 @@ def test_ltx_runtime_reuses_mode_and_switches_between_fast_and_quality(monkeypat
     assert "temporal_upscalings" not in generations[0][1]
     assert generations[2][1]["temporal_upscalings"] == 0
     assert generations[2][1]["spatial_upscalings"] == 1
-    assert "detailing_lora" in dict(loads[1][1] and ((Path(value).stem.split(".")[0], value) for value in [])) or True
+    assert "detailing_lora" not in loads[0][1]
+    assert "detailing_lora" in loads[1][1]
     assert len(encodes) == 4
     assert all((tmp_path / name).is_file() for name in (
         "fast-one.mp4", "fast-two.mp4", "quality-one.mp4", "quality-two.mp4"
