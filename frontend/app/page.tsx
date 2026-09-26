@@ -2,7 +2,10 @@
 import { useEffect, useState } from 'react';
 import SceneEditor, {type Scene, type TransitionMode, type AudioMode} from './SceneEditor';
 
-const API = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000';
+const API = process.env.NEXT_PUBLIC_API_URL?.replace(/\/+$/, '');
+if (!API) {
+  throw new Error('NEXT_PUBLIC_API_URL is not configured. Set it in frontend/.env.local.');
+}
 type CaptionStyle = 'classic' | 'bold' | 'minimal';
 type GenerationMode = 'fast' | 'quality';
 type MusicTrack = {provider:'uploaded'; asset:string; enabled:boolean; volume:number; loop:boolean; fade_in:number; fade_out:number};
