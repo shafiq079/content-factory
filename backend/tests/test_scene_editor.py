@@ -90,7 +90,7 @@ def test_schema_v4_migrates_asset_origin():
            "visual_prompt": "A landscape", "clip": "clips/scene-01.mp4", "voice": "voice/scene-01.wav"}],
            "assets": {}, "error": None, "revision": 0}
     upgraded = contracts.migrate_timeline(old)
-    assert upgraded["schema_version"] == 5
+    assert upgraded["schema_version"] == contracts.SCHEMA_VERSION
     assert upgraded["scenes"][0]["original_clip"] == "clips/scene-01.mp4"
     assert upgraded["scenes"][0]["original_voice"] == "voice/scene-01.wav"
 

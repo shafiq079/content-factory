@@ -61,7 +61,7 @@ Typical output is a 30–120 second vertical video, especially 60–120 second r
 
 ### AI / Media
 - Planner: Ollama-compatible local LLM
-- Initial research: Wikipedia excerpts
+- Research v2: Wikipedia article extracts plus optional self-hosted SearXNG search and Trafilatura page extraction
 - Video: LTX 2.5
 - Narration: Kokoro with project-level voice ID / blend / speed settings and cached per-language runtime
 - Captions: script timing or faster-whisper
@@ -169,7 +169,7 @@ Each project stores:
 - intermediate render files
 - optional `.otio` export
 
-The timeline stores scene order, prompts, narration, scene duration, start times, source IDs, audio mode, generation mode, transition mode/duration, status, active asset paths, original asset paths and asset origin. Schema v5 migrates v4 and older projects; uploaded/generated files use unique paths and stay on disk after later edits.
+The timeline stores scene order, prompts, narration, scene duration, start times, source IDs, audio mode, generation mode, transition mode/duration, status, active asset paths, original asset paths and asset origin. Schema v6 migrates v5 and older projects; uploaded/generated files use unique paths and stay on disk after later edits.
 
 Scene editor action boundaries:
 - Replace video: validate/transcode a project-scoped upload, switch the active clip, rebuild captions/render; no video model, no TTS. Native mode requires an audio stream.
@@ -245,17 +245,19 @@ Implemented render-only editing:
 
 MoneyPrinterTurbo's MIT-licensed video effects were inspected as a practical reference. It applies MoviePy fade/slide/zoom effects to clips. Content Factory keeps its own FFmpeg duration-preserving seam implementation because our narration/caption/music/SFX timeline must remain stable and editable.
 
-## 9. Research Behavior
+## 9. Research v2
 
-Current research is deliberately small:
-- Wikipedia search
-- up to a few introduction excerpts
-- source URL saved in timeline
-- source IDs attached to scenes
+Research modes:
+- `auto`: broader research for Ollama; no external research for the deterministic preview planner.
+- `broader`: optional local SearXNG JSON search plus Wikipedia references. If search is absent/unavailable, use Wikipedia and record the limitation. Without usable reference or web text, stop before factual planning.
+- `wikipedia`: article introductions retrieved via Wikimedia's extracts API, not search-result snippets.
+- `none`: creative/fiction use without external citations.
 
-This is context for the planner, **not full fact checking**. Do not claim that current Wikipedia support independently verifies every narration sentence.
+SearXNG is operator-configured with `SEARXNG_URL` pointing to an HTTP loopback origin (publish a container port to loopback). Enable the instance's JSON result format. No paid search API is required. The broader provider bounds results, ranks clear primary .gov/.edu/.int sources and topic-relevant titles, filters obvious navigation/spam, deduplicates URLs/text and selects diverse domains. These are transparent selection rules, not truth scores. Web HTML is fetched over HTTPS on port 443 with validated public DNS pinned to the TLS socket, revalidated redirects, response type/size limits and timeouts. Trafilatura >=2.0 (Apache 2.0) extracts main text and available page metadata; unsupported, private, binary, huge or inaccessible pages are skipped. Wikipedia uses its existing public API. Neither service is an unrestricted crawler.
 
-Broader research is a later task after the core generation pipeline is mature.
+Timeline schema v6 saves `research[]` Source records: stable numeric ID (Wikipedia page ID or deterministic URL hash within JavaScript's safe integer range), title, canonical URL, domain, publisher, available publication date, retrieval timestamp, excerpt, verbatim selected evidence and provider. `research_brief` stores the effective mode, limitations and possible numerical disagreements identified by a deliberately narrow cross-source sentence comparison. The selected sources are persisted before planning, so retries reuse them instead of repeating fetches. Existing v5 manifests get a legacy brief and retain their sources.
+
+AI Director receives a structured evidence pack with IDs and possible conflicts and is instructed to cite factual scenes, avoid invented numbers/dates/names, and qualify weak/conflicting evidence; creative portions do not need citations. The plan validator rejects unknown IDs and precise figures missing from cited passages. It refuses an unqualified disputed figure when a possible numerical disagreement concerns a cited source. This only catches a narrow subset of factual errors: citation relevance, context, naming and actual truth still require review. The frontend displays evidence, source links/publisher/date, limitations, potential conflicts and citing scene IDs. External source text is treated as untrusted instructions in the Director prompt.
 
 ## 10. Current Repository State
 
@@ -278,11 +280,12 @@ Important completed milestones:
 - editable project background music and timeline SFX with render-only FFmpeg mixing
 - render-only scene ordering plus black/white fade transition controls
 - scene clip/voice import, narration text and mode editing without unrelated model calls; immutable source assets and timeline v5 migration
+- Research v2 structured source evidence, optional SearXNG, safer article extraction, conflict review, numeric grounding and timeline v6 migration
 - GitHub Actions frontend build + backend CPU tests
 
 ### Most recent completed development work
 
-**Project editing and asset replacement** now provide project-scoped clip and narration uploads, per-scene text edits, compatible audio mode changes and clearer grouped scene controls. Imported clips are normalized into MP4; voices into PCM WAV. Asset provenance and original paths are stored in timeline v5 and exported to OTIO; regeneration uses fresh asset paths. Clip, timeline and narration changes only call the provider they require. GPU generation remains unverified. Next: learn from CPU/GPU use and add a focused batch editor when useful; broader research/factual grounding is the next major product priority.
+**Research v2** adds a source-backed research pack to the director path. SearXNG search is optional and self-hosted; Wikipedia remains the reference fallback. Trafilatura extracts public pages with bounded secure retrieval. Projects retain source evidence, provenance and an explicit research brief in timeline v6. Scene IDs point to the saved sources; the planning contract rejects unsupported precise figures and flags possible numerical disagreements for review. These checks do not constitute automatic fact checking. GPU generation remains unverified. Next recommended task: build a review/approval step for factual scene claims when observed content quality warrants it; focused batch editing is the next smaller editor task.
 
 ## 11. Important Source Files
 
@@ -303,6 +306,9 @@ Important completed milestones:
 - `backend/app/providers.py`
   - provider registry
   - preflight checks
+
+- `backend/app/research.py`
+  - bounded research adapters, secure page retrieval, extracted evidence and conflict hints
 
 - `backend/app/jobs.py`
   - persistent SQLite job queue
@@ -356,7 +362,7 @@ When a GPU becomes available, the first validation should compare identical prom
 
 Current priority order:
 
-1. Broader research / stronger factual grounding
+1. Grounded-scene review and approval before rendering if content reviews reveal unsupported claims
 2. Focused scene batch editing if real use calls for it
 3. Add another video provider such as Wan
 4. Real GPU validation of LTX Fast vs DFR Quality
