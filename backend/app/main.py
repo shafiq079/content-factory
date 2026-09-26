@@ -29,7 +29,18 @@ async def lifespan(application: FastAPI):
 
 
 app = FastAPI(title="Content Factory", version="0.2.0", lifespan=lifespan)
-app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"], allow_credentials=False, allow_methods=["GET", "POST"], allow_headers=["Content-Type"])
+# Development/prototype mode is intentionally origin-agnostic so the frontend can
+# call the API from localhost, GitHub Codespaces, LAN hosts, or other temporary
+# preview origins without per-environment CORS edits. Keep credentials disabled.
+# Replace this wildcard policy with an explicit production allowlist before
+# exposing the service publicly.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.get("/health")
