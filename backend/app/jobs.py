@@ -10,6 +10,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
+from typing import Callable
 
 from . import core
 
@@ -109,6 +110,57 @@ class JobStore:
                 lease_until=NULL,cancel_requested=0,updated_at=excluded.updated_at""",
                 (project_id, "render", "queued", time.time()))
             return manifest
+
+    def _enqueue_audio_edit(self, project_id: str, stage: str,
+                            edit: Callable[[dict], None]) -> dict:
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT state FROM jobs WHERE project_id=?", (project_id,)).fetchone()
+            if row and row["state"] in ("queued", "running"):
+                raise RuntimeError("Project already has a running or queued job")
+            manifest = core.load(project_id)
+            if manifest["status"] != "complete":
+                raise RuntimeError("Only completed projects can edit music or SFX")
+            edit(manifest)
+            manifest.update(status="queued", stage=stage, error=None)
+            core.atomic_write(core.project_path(project_id) / "timeline.json", manifest)
+            db.execute("""INSERT INTO jobs(project_id,kind,state,updated_at) VALUES(?,?,?,?)
+                ON CONFLICT(project_id) DO UPDATE SET kind='render',scene_id=NULL,state='queued',token=NULL,
+                lease_until=NULL,cancel_requested=0,updated_at=excluded.updated_at""",
+                (project_id, "render", "queued", time.time()))
+            return manifest
+
+    def enqueue_music(self, project_id: str, music: dict) -> dict:
+        def edit(manifest: dict) -> None:
+            manifest["music"] = music
+        return self._enqueue_audio_edit(project_id, "queued to apply background music", edit)
+
+    def update_music(self, project_id: str, settings: dict) -> dict:
+        def edit(manifest: dict) -> None:
+            current = manifest.get("music")
+            if not current:
+                raise ValueError("Project has no background music")
+            manifest["music"] = {**current, **settings}
+        return self._enqueue_audio_edit(project_id, "queued to update background music", edit)
+
+    def remove_music(self, project_id: str) -> dict:
+        def edit(manifest: dict) -> None:
+            manifest["music"] = None
+        return self._enqueue_audio_edit(project_id, "queued to remove background music", edit)
+
+    def enqueue_sfx(self, project_id: str, effect: dict) -> dict:
+        def edit(manifest: dict) -> None:
+            manifest.setdefault("sfx", []).append(effect)
+        return self._enqueue_audio_edit(project_id, "queued to add sound effect", edit)
+
+    def remove_sfx(self, project_id: str, effect_id: str) -> dict:
+        def edit(manifest: dict) -> None:
+            items = manifest.get("sfx", [])
+            if not any(item.get("id") == effect_id for item in items):
+                raise ValueError("Unknown sound effect")
+            manifest["sfx"] = [item for item in items if item.get("id") != effect_id]
+        return self._enqueue_audio_edit(project_id, "queued to remove sound effect", edit)
+
 
     def enqueue_revoice(self, project_id: str, voice_id: str, voice_speed: float) -> dict:
         with self.connect() as db:
