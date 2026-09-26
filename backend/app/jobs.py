@@ -45,8 +45,15 @@ class JobStore:
                 except (ValueError, OSError):
                     continue
                 if manifest.get("status") in ("queued", "running"):
-                    db.execute("INSERT OR IGNORE INTO jobs(project_id,kind,state,updated_at) VALUES(?,?,?,?)",
-                               (item.parent.name, "generate", "queued", time.time()))
+                    pending = manifest.get("pending_job") or {}
+                    kind = pending.get("kind", "generate")
+                    if kind not in {"generate", "regenerate", "render", "timeline", "revoice", "narration"}:
+                        continue
+                    db.execute("""INSERT INTO jobs(project_id,kind,scene_id,state,updated_at) VALUES(?,?,?,?,?)
+                        ON CONFLICT(project_id) DO UPDATE SET kind=excluded.kind,scene_id=excluded.scene_id,
+                        state='queued',token=NULL,lease_until=NULL,cancel_requested=0,updated_at=excluded.updated_at
+                        WHERE jobs.state NOT IN ('queued','running')""",
+                        (item.parent.name, kind, pending.get("scene_id"), "queued", time.time()))
 
     def enqueue_generate(self, project_id: str) -> None:
         with self.connect() as db:
@@ -68,7 +75,6 @@ class JobStore:
                 raise ValueError("Unknown scene")
             if audio_mode is not None and audio_mode not in ("narration", "native", "hybrid"):
                 raise ValueError("Unknown audio mode")
-            old_voice = scene.get("voice")
             if visual_prompt is not None:
                 scene["visual_prompt"] = visual_prompt
             if narration is not None:
@@ -80,16 +86,95 @@ class JobStore:
                 if audio_mode == "native":
                     scene["voice"] = None
             scene["status"] = "pending"
-            (core.project_path(project_id) / scene["clip"]).unlink(missing_ok=True)
-            if (narration is not None or audio_mode is not None) and old_voice:
-                (core.project_path(project_id) / old_voice).unlink(missing_ok=True)
+            # New generation uses new paths; existing source files remain recoverable.
+            scene["clip"] = f"clips/scene-{scene_id:02d}-{uuid.uuid4().hex}.mp4"
+            scene["clip_origin"] = "generated"
+            if (narration is not None or audio_mode is not None) and scene["audio_mode"] != "native":
+                scene["voice"] = f"voice/scene-{scene_id:02d}-{uuid.uuid4().hex}.wav"
+                scene["voice_origin"] = "generated"
             manifest.update(status="queued", stage=f"queued to regenerate scene {scene_id}", error=None)
+            manifest["pending_job"] = {"kind": "regenerate", "scene_id": scene_id}
             core.atomic_write(core.project_path(project_id) / "timeline.json", manifest)
             db.execute("""INSERT INTO jobs(project_id,kind,scene_id,state,updated_at)
                 VALUES(?,?,?,?,?) ON CONFLICT(project_id) DO UPDATE SET
                 kind=excluded.kind,scene_id=excluded.scene_id,state='queued',token=NULL,
                 lease_until=NULL,cancel_requested=0,updated_at=excluded.updated_at""",
                 (project_id, "regenerate", scene_id, "queued", time.time()))
+            return manifest
+
+    def enqueue_scene_asset(self, project_id: str, scene_id: int, asset: str, path: str,
+                            duration: float | None = None, narration: str | None = None) -> dict:
+        """Activate an imported asset and rerender without a video model."""
+        def edit(manifest: dict, scene: dict) -> str:
+            if asset == "clip":
+                if scene.get("audio_mode") == "native" and not core.media.has_audio(core.project_path(project_id) / path):
+                    raise ValueError("Native audio mode requires a video with an audio track")
+                scene["clip"] = path
+                scene["clip_origin"] = "uploaded"
+                return "timeline"
+            if scene.get("audio_mode", "narration") == "native":
+                raise ValueError("Native audio is embedded in the clip; switch to narration or hybrid before replacing narration")
+            scene["original_voice"] = scene.get("original_voice") or scene.get("voice")
+            scene["voice"] = path
+            scene["voice_origin"] = "uploaded"
+            scene["duration"] = duration
+            if narration is not None:
+                scene["narration"] = narration
+            core.recalculate_timeline(manifest)
+            return "timeline"
+        return self._enqueue_scene_edit(project_id, scene_id, "queued to replace scene asset", edit)
+
+    def enqueue_scene_narration(self, project_id: str, scene_id: int, narration: str) -> dict:
+        def edit(manifest: dict, scene: dict) -> str:
+            if scene.get("audio_mode", "narration") == "native":
+                raise ValueError("Native dialogue is embedded in the video. Change audio mode first, or regenerate the video with new dialogue")
+            scene["narration"] = narration
+            scene["voice"] = f"voice/scene-{scene_id:02d}-{uuid.uuid4().hex}.wav"
+            scene["voice_origin"] = "generated"
+            core.recalculate_timeline(manifest)
+            return "narration"
+        return self._enqueue_scene_edit(project_id, scene_id, "queued to regenerate scene narration", edit)
+
+    def enqueue_scene_audio_mode(self, project_id: str, scene_id: int, mode: str) -> dict:
+        def edit(manifest: dict, scene: dict) -> str:
+            folder = core.project_path(project_id)
+            if mode == "native":
+                if not core.media.has_audio(folder / scene["clip"]):
+                    raise ValueError("Native audio requires an active clip with an audio track")
+            elif not scene.get("voice"):
+                scene["voice"] = f"voice/scene-{scene_id:02d}-{uuid.uuid4().hex}.wav"
+                scene["voice_origin"] = "generated"
+                scene["audio_mode"] = mode
+                return "narration"
+            else:
+                measured = core.media.validate_voice(folder / scene["voice"], scene["duration"], False)
+                scene["duration"] = round(measured.duration, 3)
+            scene["audio_mode"] = mode
+            core.recalculate_timeline(manifest)
+            return "timeline"
+        return self._enqueue_scene_edit(project_id, scene_id, "queued to change scene audio mode", edit)
+
+    def _enqueue_scene_edit(self, project_id: str, scene_id: int, stage: str,
+                            edit: Callable[[dict, dict], str]) -> dict:
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT state FROM jobs WHERE project_id=?", (project_id,)).fetchone()
+            if row and row["state"] in ("queued", "running"):
+                raise RuntimeError("Project already has a running or queued job")
+            manifest = core.load(project_id)
+            if manifest["status"] != "complete":
+                raise RuntimeError("Only completed projects can edit scenes")
+            scene = next((s for s in manifest["scenes"] if s["id"] == scene_id), None)
+            if scene is None:
+                raise ValueError("Unknown scene")
+            kind = edit(manifest, scene)
+            manifest["pending_job"] = {"kind": kind, "scene_id": scene_id}
+            manifest.update(status="queued", stage=stage, error=None)
+            core.atomic_write(core.project_path(project_id) / "timeline.json", manifest)
+            db.execute("""INSERT INTO jobs(project_id,kind,scene_id,state,updated_at) VALUES(?,?,?,?,?)
+                ON CONFLICT(project_id) DO UPDATE SET kind=excluded.kind,scene_id=excluded.scene_id,
+                state='queued',token=NULL,lease_until=NULL,cancel_requested=0,updated_at=excluded.updated_at""",
+                (project_id, kind, scene_id, "queued", time.time()))
             return manifest
 
     def enqueue_render(self, project_id: str, caption_style: str) -> dict:
@@ -104,6 +189,7 @@ class JobStore:
             if caption_style not in core.CAPTION_STYLES:
                 raise ValueError("Unknown caption style")
             manifest.update(caption_style=caption_style, status="queued", stage="queued to render again", error=None)
+            manifest["pending_job"] = {"kind": "render"}
             core.atomic_write(core.project_path(project_id) / "timeline.json", manifest)
             db.execute("""INSERT INTO jobs(project_id,kind,state,updated_at) VALUES(?,?,?,?)
                 ON CONFLICT(project_id) DO UPDATE SET kind='render',scene_id=NULL,state='queued',token=NULL,
@@ -123,6 +209,7 @@ class JobStore:
                 raise RuntimeError("Only completed projects can edit music or SFX")
             edit(manifest)
             manifest.update(status="queued", stage=stage, error=None)
+            manifest["pending_job"] = {"kind": "render"}
             core.atomic_write(core.project_path(project_id) / "timeline.json", manifest)
             db.execute("""INSERT INTO jobs(project_id,kind,state,updated_at) VALUES(?,?,?,?)
                 ON CONFLICT(project_id) DO UPDATE SET kind='render',scene_id=NULL,state='queued',token=NULL,
@@ -199,6 +286,7 @@ class JobStore:
 
             core.recalculate_timeline(manifest)
             manifest.update(status="queued", stage="queued to update timeline", error=None)
+            manifest["pending_job"] = {"kind": "timeline"}
             core.atomic_write(core.project_path(project_id) / "timeline.json", manifest)
             db.execute("""INSERT INTO jobs(project_id,kind,state,updated_at) VALUES(?,?,?,?)
                 ON CONFLICT(project_id) DO UPDATE SET kind='timeline',scene_id=NULL,state='queued',token=NULL,
@@ -229,6 +317,7 @@ class JobStore:
             request = request.model_copy(update={"voice_id": resolved})
             manifest["request"] = request.model_dump()
             manifest.update(status="queued", stage="queued to regenerate narration", error=None)
+            manifest["pending_job"] = {"kind": "revoice"}
             core.atomic_write(core.project_path(project_id) / "timeline.json", manifest)
             db.execute("""INSERT INTO jobs(project_id,kind,state,updated_at) VALUES(?,?,?,?)
                 ON CONFLICT(project_id) DO UPDATE SET kind='revoice',scene_id=NULL,state='queued',token=NULL,
@@ -315,6 +404,8 @@ def worker_loop(store: JobStore, stop: threading.Event) -> None:
             check = lambda: store.cancelled(project_id, token)
             if job["kind"] == "regenerate":
                 core.regenerate_work(project_id, job["scene_id"], check)
+            elif job["kind"] == "narration":
+                core.scene_narration_work(project_id, job["scene_id"], check)
             elif job["kind"] == "render":
                 core.render_work(project_id, check)
             elif job["kind"] == "revoice":
