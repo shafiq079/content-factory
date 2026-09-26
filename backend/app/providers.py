@@ -35,8 +35,10 @@ def ltx_check(request: core.Request) -> None:
 
 
 def kokoro_check(request: core.Request) -> None:
-    if request.language.lower() not in ("english", "british english", "spanish", "french", "hindi", "italian", "japanese", "portuguese", "chinese"):
-        raise RuntimeError(f"Kokoro language not configured: {request.language}")
+    try:
+        core.resolve_kokoro_voice(request.language, request.voice_id)
+    except ValueError as exc:
+        raise RuntimeError(str(exc)) from exc
     for package in ("kokoro", "soundfile", "numpy"):
         dependency(package)
 
