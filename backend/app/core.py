@@ -41,12 +41,20 @@ class Request(BaseModel):
     voice_provider: str = "silent"
     planner_provider: str = "template"
     research_provider: str = "auto"
+    generation_mode: str = "fast"
 
     @field_validator("video_provider")
     @classmethod
     def video_choice(cls, value: str) -> str:
         if value not in ("preview", "ltx25"):
             raise ValueError("Choose preview or ltx25")
+        return value
+
+    @field_validator("generation_mode")
+    @classmethod
+    def generation_mode_choice(cls, value: str) -> str:
+        if value not in ("fast", "quality"):
+            raise ValueError("Choose fast or quality")
         return value
 
     @field_validator("voice_provider")
@@ -163,16 +171,19 @@ class PreviewVideo(VideoGenerator):
 
 
 class LTX25Video(VideoGenerator):
-    """Reuse the official LTX 2.5 DistilledPipeline in-process across scene generations."""
+    """Run LTX 2.5 in fast Distilled or production-quality DFR mode."""
 
     KEYS = ("transformer", "text_encoder", "video_vae", "audio_vae", "upscaler")
+    QUALITY_KEYS = ("detailing_lora",)
     _runtime = None
     _runtime_key: tuple[str, ...] | None = None
     _runtime_lock = threading.Lock()
     _inference_lock = threading.Lock()
 
     @classmethod
-    def configured_paths(cls) -> dict[str, Path]:
+    def configured_paths(cls, mode: str = "fast") -> dict[str, Path]:
+        if mode not in ("fast", "quality"):
+            raise RuntimeError(f"Unknown LTX generation mode: {mode}")
         config = Path(os.getenv("LTX_CONFIG", "ltx-models.json")).expanduser().resolve()
         if not config.is_file():
             raise RuntimeError(f"LTX_CONFIG missing: {config}. See ltx-models.example.json")
@@ -181,22 +192,22 @@ class LTX25Video(VideoGenerator):
         except (OSError, ValueError) as exc:
             raise RuntimeError(f"Invalid LTX_CONFIG: {exc}") from exc
 
+        names = cls.KEYS + (cls.QUALITY_KEYS if mode == "quality" else ())
         paths: dict[str, Path] = {}
-        for name in cls.KEYS:
+        for name in names:
             try:
                 path = Path(raw[name]).expanduser().resolve()
             except (KeyError, TypeError) as exc:
-                raise RuntimeError(f"Invalid LTX_CONFIG: missing or invalid '{name}'") from exc
+                raise RuntimeError(f"Invalid LTX_CONFIG: missing or invalid '{name}' for {mode} mode") from exc
             if not path.is_file():
                 raise RuntimeError(f"Missing LTX checkpoint: {name}: {path}")
             paths[name] = path
         return paths
 
     @staticmethod
-    def _build_runtime(paths: dict[str, Path]):
+    def _build_runtime(paths: dict[str, Path], mode: str):
         # Imports stay lazy so the CPU preview and CI do not require the GPU stack.
         from ltx_core.model.video_vae import get_video_chunks_number
-        from ltx_pipelines.distilled import DistilledPipeline
         from ltx_pipelines.utils.media_io import encode_video
         from ltx_pipelines.utils.model_paths import ModelPaths
 
@@ -206,43 +217,81 @@ class LTX25Video(VideoGenerator):
             video_vae_path=str(paths["video_vae"]),
             audio_vae_path=str(paths["audio_vae"]),
         )
-        pipeline = DistilledPipeline(
-            model_paths=model_paths,
-            spatial_upsampler_path=str(paths["upscaler"]),
-            loras=[],
-        )
-        return pipeline, encode_video, get_video_chunks_number
+        import torch
+
+        if mode == "quality":
+            from ltx_core.loader import LTXV_LORA_COMFY_RENAMING_MAP, LoraPathStrengthAndSDOps
+            from ltx_pipelines.dfr_pipeline import DFRPipeline
+
+            detailing_lora = [
+                LoraPathStrengthAndSDOps(
+                    str(paths["detailing_lora"]),
+                    1.0,
+                    LTXV_LORA_COMFY_RENAMING_MAP,
+                )
+            ]
+            pipeline = DFRPipeline(
+                model_paths=model_paths,
+                spatial_upsampler_path=str(paths["upscaler"]),
+                loras=[],
+                detailing_lora=detailing_lora,
+            )
+        else:
+            from ltx_pipelines.distilled import DistilledPipeline
+
+            pipeline = DistilledPipeline(
+                model_paths=model_paths,
+                spatial_upsampler_path=str(paths["upscaler"]),
+                loras=[],
+            )
+        def infer(**kwargs):
+            with torch.inference_mode():
+                return pipeline(**kwargs)
+
+        return infer, encode_video, get_video_chunks_number
 
     @classmethod
-    def _runtime_for(cls, paths: dict[str, Path]):
-        key = tuple(str(paths[name]) for name in cls.KEYS)
+    def _runtime_for(cls, paths: dict[str, Path], mode: str):
+        required = cls.KEYS + (cls.QUALITY_KEYS if mode == "quality" else ())
+        key = (mode, *(str(paths[name]) for name in required))
         with cls._runtime_lock:
             if cls._runtime is None or cls._runtime_key != key:
-                cls._runtime = cls._build_runtime(paths)
+                # Keep only one heavyweight GPU pipeline alive. Switching mode intentionally
+                # replaces the previous runtime instead of retaining two 22B pipelines.
+                cls._runtime = None
+                cls._runtime_key = None
+                cls._runtime = cls._build_runtime(paths, mode)
                 cls._runtime_key = key
             return cls._runtime
 
     def generate(self, scene: dict, output: Path, request: Request) -> None:
-        paths = self.configured_paths()
-        pipeline, encode_video, get_video_chunks_number = self._runtime_for(paths)
+        mode = request.generation_mode
+        paths = self.configured_paths(mode)
+        pipeline, encode_video, get_video_chunks_number = self._runtime_for(paths, mode)
         fps = 24
         frames = max(9, int(scene["duration"] * fps / 8) * 8 + 1)
         height = math.ceil(request.height / 64) * 64
         width = math.ceil(request.width / 64) * 64
         seed = int(os.getenv("LTX_SEED", "42")) + int(scene["id"]) - 1
+        args = {
+            "prompt": scene["visual_prompt"],
+            "seed": seed,
+            "height": height,
+            "width": width,
+            "frame_rate": fps,
+            "images": [],
+            "num_frames": frames,
+        }
+        if mode == "quality":
+            # Official LTX 2.5 DFR production path. One spatial refinement round is
+            # the documented default; temporal upscaling stays off unless we later
+            # add the separate temporal-upscaler checkpoint and an explicit setting.
+            args.update(temporal_upscalings=0, spatial_upscalings=1)
 
         # The worker currently processes one job at a time. Keep an explicit lock so a
         # future concurrent caller cannot run two generations through one GPU model.
         with self._inference_lock:
-            result = pipeline(
-                prompt=scene["visual_prompt"],
-                seed=seed,
-                height=height,
-                width=width,
-                frame_rate=fps,
-                images=[],
-                num_frames=frames,
-            )
+            result = pipeline(**args)
             encode_video(
                 video=result.video,
                 fps=fps,
@@ -252,7 +301,7 @@ class LTX25Video(VideoGenerator):
             )
 
         if not output.is_file():
-            raise RuntimeError("LTX pipeline completed without a video")
+            raise RuntimeError(f"LTX {mode} pipeline completed without a video")
 
 
 class VoiceGenerator(ABC):
@@ -390,7 +439,8 @@ def export_otio(project_dir: Path, scenes: list[dict]) -> None:
         span = otio.opentime.TimeRange(otio.opentime.RationalTime(0,rate), otio.opentime.RationalTime(round(s["duration"]*rate),rate))
         track.append(otio.schema.Clip(name=f"Scene {s['id']}", media_reference=media, source_range=span,
                                       metadata={"narration": s["narration"], "prompt": s["visual_prompt"],
-                                                "audio_mode": s.get("audio_mode", "narration")}))
+                                                "audio_mode": s.get("audio_mode", "narration"),
+                                                "generation_mode": s.get("generation_mode", "fast")}))
     otio.adapters.write_to_file(timeline, str(project_dir / "timeline.otio"))
 
 
@@ -434,6 +484,7 @@ def ensure_scene_media(folder: Path, manifest: dict, scene: dict, req: Request,
         scene["planned_duration"] = scene["duration"]
     target = scene["planned_duration"]
     mode = scene.get("audio_mode", "narration")
+    scene["generation_mode"] = req.generation_mode if req.video_provider == "ltx25" else "fast"
     clip = folder / scene["clip"]
     check()
 
@@ -516,6 +567,9 @@ def process(project_id: str, is_cancelled: Callable[[], bool] = lambda: False) -
             planner = providers.make("planner", req.planner_provider)
             sources = [Source.model_validate(source) for source in manifest["research"]]
             manifest.update(contracts.validate_plan(planner.plan(req, sources), sources, req.duration))
+            planned_mode = req.generation_mode if req.video_provider == "ltx25" else "fast"
+            for planned_scene in manifest["scenes"]:
+                planned_scene["generation_mode"] = planned_mode
             save("scene plan ready")
         scenes = manifest["scenes"]
         video = providers.make("video", req.video_provider)

@@ -22,6 +22,7 @@ class Scene(BaseModel):
     camera: str = "static"
     transition: str = "cut"
     audio_mode: Literal["narration", "native", "hybrid"] = "narration"
+    generation_mode: Literal["fast", "quality"] = "fast"
     source_ids: list[int] = Field(default_factory=list)
     status: Literal["pending", "ready"] = "pending"
     start: float | None = Field(default=None, ge=0)

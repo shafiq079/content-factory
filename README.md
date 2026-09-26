@@ -28,11 +28,11 @@ With Ollama selected, the pipeline first retrieves up to three Wikipedia introdu
 
 ## Real model setup on your GPU machine
 
-1. Install and configure the [official LTX-2 repository](https://github.com/Lightricks/LTX-2) and its 2.5 distilled pipeline. Download the model files listed in its current README. The weights are large; the official ComfyUI workflow recommends CUDA with **32 GB+ VRAM and 100 GB+ disk**; this is a planning estimate, not a proven minimum for our Python configuration. Lower memory can sometimes use quantization/offload; test your own GPU before budgeting.
+1. Install and configure the [official LTX-2 repository](https://github.com/Lightricks/LTX-2). This app supports the 2.5 **DistilledPipeline** for Fast mode and the official **DFR (Diffusion Fidelity Rendering)** production path for Quality mode. DFR uses the same distilled transformer plus the detailing IC-LoRA and a spatial refinement pass. The weights are large; test your own GPU before budgeting because DFR is slower and needs more VRAM than Distilled.
 2. Install `backend/requirements-ai.txt` in an environment compatible with LTX's Torch/CUDA stack, `espeak-ng` for Kokoro pronunciation fallback, and the official `ltx_pipelines` package. LTX's official repo uses `uv sync --extra natten`; run the backend in that environment or expose the installed module to its Python interpreter.
-3. Copy `backend/ltx-models.example.json` to a private absolute path and fill in paths to all five LTX 2.5 split checkpoints. Set `LTX_CONFIG` to that JSON file's absolute path. The backend now loads the official Python `DistilledPipeline` directly and keeps that model runtime alive inside the worker, so all scenes in a project — and later jobs using the same checkpoint set — reuse the loaded model instead of starting a new Python process for every clip. Model/checkpoint versions must agree. `LTX_SEED` optionally sets the base seed (default `42`; each scene offsets it by scene ID). Start with smaller generations on GPU; 1080×1920 output is the render target and LTX inference at this size may exhaust VRAM. The app currently requests a nearby multiple-of-64 LTX resolution.
+3. Copy `backend/ltx-models.example.json` to a private absolute path and fill in the five shared LTX 2.5 component paths. To use **Quality / DFR**, also download the official `ltx-2.5-22b-ic-lora-pixel-spatial-upscaler-x2-1.0.safetensors` from Lightricks' separate IC-LoRA repository and set `detailing_lora`. Set `LTX_CONFIG` to this JSON file. Fast mode only requires the five shared paths; Quality mode refuses to start if `detailing_lora` is missing. The worker keeps one heavyweight LTX runtime alive and reuses it across scenes. Switching between Fast and Quality replaces the active runtime rather than keeping both 22B pipelines loaded. `LTX_SEED` optionally sets the base seed (default `42`; each scene offsets it by scene ID). The app requests a nearby multiple-of-64 LTX resolution; final FFmpeg output is still rendered to the requested project dimensions.
 4. Install and start [Ollama](https://github.com/ollama/ollama) and pull a JSON-capable model. Set `OLLAMA_MODEL` and optionally `OLLAMA_URL` (local service only). Set `CAPTION_PROVIDER=whisper` to transcribe Kokoro output with faster-whisper; optionally set `WHISPER_MODEL=small`, `WHISPER_DEVICE=cpu`, `WHISPER_COMPUTE=int8`. Kokoro's configured voice is controlled with `KOKORO_VOICE`, default `af_heart` in English. Other voices/languages should be checked against the official Kokoro model before use.
-5. In the UI choose **Ollama**, **LTX 2.5**, **Kokoro**. Before a project is queued, the backend checks the selected providers, their local dependencies and checkpoint paths, and the Ollama model. Missing setup returns a descriptive HTTP 422 error; no fake video is silently substituted.
+5. In the UI choose **Ollama**, **LTX 2.5**, **Kokoro**, then choose **Fast · Distilled** for drafts or **Quality · DFR production path** for final-quality generation. Before a project is queued, the backend checks the selected mode's dependencies and checkpoint paths plus the Ollama model. Missing setup returns a descriptive HTTP 422 error; no fake video is silently substituted.
 
 ## Editable output and behavior
 
@@ -45,7 +45,7 @@ The server stores projects on disk and uses a SQLite job queue in the project di
 ## Scope and present limitations
 
 - The template planner is a deterministic test fixture. Wikipedia introduction excerpts offer a limited initial research source; they may be incomplete or unsuitable for a topic. Ollama uses these notes but does not independently verify factual claims or validate whether each narration sentence is fully supported.
-- The first real video provider is LTX 2.5 distilled. Raw LTX scene files keep synchronized native audio. Final assembly now supports scene-level `narration`, `native` and `hybrid` routing; hybrid lowers native audio under the dedicated narrator. `native` requires the generated clip to contain an audio stream. Clips can still loop after normalization when actual model output is shorter than the target duration.
+- The first real video provider is LTX 2.5 with two generation modes: `fast` uses the official DistilledPipeline and `quality` uses the official DFR production path with the detailing IC-LoRA and one spatial refinement round. Raw LTX scene files keep synchronized native audio. Final assembly supports scene-level `narration`, `native` and `hybrid` routing; hybrid lowers native audio under the dedicated narrator. `native` requires the generated clip to contain an audio stream. Temporal DFR upscaling is intentionally disabled for now, so the separate temporal-upscaler checkpoint is not required.
 - Without `CAPTION_PROVIDER=whisper`, caption timing is estimated from the script and distributed evenly across each scene. Whisper mode transcribes generated voice with word timestamps but does not guarantee perfect forced alignment; review captions before publishing.
 - The UI edits visual prompts and offers three caption styling presets. Music, sound effects, transitions beyond cuts, asset replacement and Wan are future additions.
 - Generated footage has **not** been verified in this workspace because it has no NVIDIA GPU, official checkpoint files or Ollama/Kokoro installations. Only the preview mode was run end to end.
@@ -54,7 +54,7 @@ The server stores projects on disk and uses a SQLite job queue in the project di
 
 | Component | Decision | Important condition |
 | --- | --- | --- |
-| LTX 2.5 | Official Python `ltx_pipelines.distilled`, split weights; local GPU inference | LTX 2.x community license, **not** Apache. Entities with annual revenue at least $10m need a paid license for commercial use. Read its full current terms before distribution. |
+| LTX 2.5 | Official Python `DistilledPipeline` (Fast) and `DFRPipeline` (Quality), split weights; local GPU inference | DFR uses the same distilled transformer plus the separate detailing IC-LoRA. LTX 2.x community license, **not** Apache. Read the current terms before distribution. |
 | Wan 2.2 TI2V-5B | Strong next video adapter candidate | Official repo: Apache 2.0; its 720p single-GPU offload example specifies at least 24 GB VRAM. Not integrated yet. |
 | Kokoro 82M | Local narration adapter | Official inference repo describes Apache-licensed weights and code; language and voice availability vary. |
 | faster-whisper | Optional local word timestamp transcription | MIT implementation; CPU int8 is supported. Transcription is separate from precise forced alignment. |
@@ -65,8 +65,8 @@ Official references: [LTX-2 inference and model paths](https://github.com/Lightr
 
 ## Next engineering milestones
 
-1. Validate the persistent in-process LTX runtime and the three audio routes on a GPU host; record one-time model load cost, per-scene runtime, VRAM and output dimensions, then run a multi-scene real project.
-2. Add LTX 2.5 DFR as the slower production-quality mode while keeping Distilled as the fast generation mode.
+1. Validate both persistent LTX modes and the three audio routes on a GPU host; record model-load cost, per-scene runtime, VRAM and output dimensions, then run a multi-scene real project in Fast and Quality modes.
+2. Compare Distilled versus DFR output on identical prompts and tune when the product should use each mode.
 3. Tune the AI director's scene/audio-mode choices from real outputs, including native dialogue versus hybrid ambience.
 4. Add voice controls, music/effects adapters and then a Wan provider; expand research and public-deployment controls after the core generation path is proven.
 
