@@ -35,7 +35,9 @@ def test_voice_first_timing_and_regeneration(monkeypatch, tmp_path: Path):
         assert result["status"] == "complete", result["error"]
         assert events == [("voice", 0), ("video", 2.0), ("voice", 0), ("video", 2.0)]
         assert result["duration_actual"] == 4
-        assert result["scenes"][0]["planned_duration"] == 5
+        planned = [scene["planned_duration"] for scene in result["scenes"]]
+        assert round(sum(planned), 3) == 10
+        assert planned[0] != planned[1]
         assert result["scenes"][1]["start"] == 2
 
         response = client.post(f"/projects/{project_id}/scenes/1/regenerate", json={"visual_prompt": "New close-up action"})
