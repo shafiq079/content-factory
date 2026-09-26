@@ -51,6 +51,7 @@ class Timeline(BaseModel):
     hook: str = ""
     script: str = ""
     story_arc: str = ""
+    visual_bible: str = ""
 
     @model_validator(mode="after")
     def distinct_scenes(self):
@@ -63,6 +64,7 @@ class Timeline(BaseModel):
 class Plan(BaseModel):
     idea: str = Field(min_length=3)
     story_arc: str = ""
+    visual_bible: str = ""
     scenes: list[Scene] = Field(min_length=2)
 
 
@@ -87,7 +89,8 @@ def validate_plan(plan: dict, sources: list[Source], duration: int) -> dict:
     if any(set(scene.source_ids) - known for scene in parsed.scenes):
         raise ValueError("Planner cited a source not in the research brief")
     scenes = [scene.model_dump(exclude_none=True) for scene in parsed.scenes]
-    return {"idea": parsed.idea, "story_arc": parsed.story_arc, "hook": scenes[0]["narration"],
+    return {"idea": parsed.idea, "story_arc": parsed.story_arc, "visual_bible": parsed.visual_bible,
+            "hook": scenes[0]["narration"],
             "script": " ".join(scene["narration"] for scene in scenes), "scenes": scenes}
 
 
