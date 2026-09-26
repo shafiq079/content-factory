@@ -12,7 +12,7 @@ import uuid
 from pathlib import Path
 from typing import Callable
 
-from . import core
+from . import contracts, core
 
 
 LEASE_SECONDS = 60
@@ -131,8 +131,9 @@ class JobStore:
             return manifest
 
     def enqueue_music(self, project_id: str, music: dict) -> dict:
+        validated = contracts.MusicTrack.model_validate(music).model_dump()
         def edit(manifest: dict) -> None:
-            manifest["music"] = music
+            manifest["music"] = validated
         return self._enqueue_audio_edit(project_id, "queued to apply background music", edit)
 
     def update_music(self, project_id: str, settings: dict) -> dict:
@@ -140,7 +141,7 @@ class JobStore:
             current = manifest.get("music")
             if not current:
                 raise ValueError("Project has no background music")
-            manifest["music"] = {**current, **settings}
+            manifest["music"] = contracts.MusicTrack.model_validate({**current, **settings}).model_dump()
         return self._enqueue_audio_edit(project_id, "queued to update background music", edit)
 
     def remove_music(self, project_id: str) -> dict:
@@ -149,8 +150,9 @@ class JobStore:
         return self._enqueue_audio_edit(project_id, "queued to remove background music", edit)
 
     def enqueue_sfx(self, project_id: str, effect: dict) -> dict:
+        validated = contracts.SFXTrack.model_validate(effect).model_dump()
         def edit(manifest: dict) -> None:
-            manifest.setdefault("sfx", []).append(effect)
+            manifest.setdefault("sfx", []).append(validated)
         return self._enqueue_audio_edit(project_id, "queued to add sound effect", edit)
 
     def remove_sfx(self, project_id: str, effect_id: str) -> dict:
