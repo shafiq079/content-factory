@@ -71,6 +71,17 @@ class VoiceEdit(BaseModel):
     voice_speed: float = Field(default=1.0, ge=0.5, le=2.0)
 
 
+class TransitionEdit(BaseModel):
+    scene_id: int = Field(ge=1)
+    transition: Literal["cut", "fade", "fade_white"] = "cut"
+    transition_duration: float = Field(default=0.0, ge=0, le=2.0)
+
+
+class TimelineEdit(BaseModel):
+    scene_order: list[int] | None = None
+    transitions: list[TransitionEdit] = Field(default_factory=list)
+
+
 class MusicEdit(BaseModel):
     enabled: bool = True
     volume: float = Field(default=0.2, ge=0, le=1)
@@ -108,6 +119,22 @@ def change_project_voice(project_id: str, edit: VoiceEdit):
         raise HTTPException(422, str(exc)) from exc
     try:
         return app.state.jobs.enqueue_revoice(project_id, edit.voice_id, edit.voice_speed)
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@app.post("/projects/{project_id}/timeline", status_code=202)
+def edit_project_timeline(project_id: str, edit: TimelineEdit):
+    try:
+        return app.state.jobs.enqueue_timeline_edit(
+            project_id,
+            edit.scene_order,
+            [item.model_dump() for item in edit.transitions],
+        )
+    except FileNotFoundError:
+        raise HTTPException(404, "Project not found")
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(409, str(exc)) from exc
 
