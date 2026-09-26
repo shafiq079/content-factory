@@ -44,7 +44,7 @@ def test_fake_invalid_audio_and_retry(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(core, "ROOT", tmp_path)
 
     class BrokenVoice:
-        def generate(self, text, output, seconds, language):
+        def generate(self, text, output, seconds, language, voice_id="", speed=1.0):
             output.write_bytes(b"not a wave file")
 
     original = providers.REGISTRY["voice"]["silent"]

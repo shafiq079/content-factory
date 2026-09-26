@@ -62,7 +62,7 @@ Typical output is a 30–120 second vertical video, especially 60–120 second r
 - Planner: Ollama-compatible local LLM
 - Initial research: Wikipedia excerpts
 - Video: LTX 2.5
-- Narration: Kokoro
+- Narration: Kokoro with project-level voice ID / blend / speed settings and cached per-language runtime
 - Captions: script timing or faster-whisper
 - Editing / assembly: FFmpeg
 - Editable interchange: OpenTimelineIO when installed
@@ -126,6 +126,17 @@ Best for scenes where a visible character/person should speak or where native sy
 Best for cinematic narration where environmental sound improves the scene.
 
 FFmpeg performs the final audio routing and mix.
+
+### Reusable narration voice controls
+
+Kokoro narration now has project-level settings:
+- `voice_id`: a Kokoro voice ID or comma-separated blend
+- `voice_speed`: 0.5–2.0, default 1.0
+- blank voice IDs resolve to a language-appropriate default (or `KOKORO_VOICE`) and the resolved value is persisted for reproducibility
+- voice IDs are restricted to safe model identifiers and must match the selected language prefix
+- Kokoro `KPipeline` instances are cached per language and reused across scenes/jobs
+- completed Kokoro projects can be **revoiced without calling the video model**: narration is regenerated, timings/captions are rebuilt, and the existing scene clips are looped/trimmed during FFmpeg rerender as needed
+- narration-only preflight intentionally does not require the LTX/GPU stack
 
 ## 6. Editable Project Model
 
@@ -217,11 +228,12 @@ Important completed milestones:
 - LTX Distilled Fast mode
 - LTX DFR Quality mode
 - frontend controls for video quality and audio routing
+- reusable Kokoro voice ID/blend/speed controls and GPU-independent project revoice workflow
 - GitHub Actions frontend build + backend CPU tests
 
 ### Most recent completed development work
 
-**AI Director v2** is implemented with narrative beats, story arc, visual bible, variable scene timing, speakable narration checks and continuity metadata. Its CPU contract/integration tests and frontend build pass. The next development priority is reusable voice controls.
+**Reusable Kokoro voice controls** are implemented on top of AI Director v2. Projects can choose and persist a Kokoro voice ID/blend and speed, reuse a cached per-language Kokoro runtime, and revoice a completed project without regenerating video. The next development priority is background music / SFX architecture and editing/timeline improvements.
 
 ## 11. Important Source Files
 
@@ -284,15 +296,14 @@ When a GPU becomes available, the first validation should compare identical prom
 
 Current priority order:
 
-1. Voice controls and reusable voice configuration
-2. Background music / SFX architecture
-3. Better editing/transitions and timeline controls
-4. Better project editing workflow
-5. Broader research / stronger factual grounding
-6. Add another video provider such as Wan
-7. Real GPU validation of LTX Fast vs DFR Quality
-8. Quality tuning based on real generated outputs
-9. Social publishing/analytics only after generation quality is proven
+1. Background music / SFX architecture
+2. Better editing/transitions and timeline controls
+3. Better project editing workflow
+4. Broader research / stronger factual grounding
+5. Add another video provider such as Wan
+6. Real GPU validation of LTX Fast vs DFR Quality
+7. Quality tuning based on real generated outputs
+8. Social publishing/analytics only after generation quality is proven
 
 ## 14. Development Rules for Future Agents
 

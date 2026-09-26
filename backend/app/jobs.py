@@ -110,6 +110,36 @@ class JobStore:
                 (project_id, "render", "queued", time.time()))
             return manifest
 
+    def enqueue_revoice(self, project_id: str, voice_id: str, voice_speed: float) -> dict:
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT state FROM jobs WHERE project_id=?", (project_id,)).fetchone()
+            if row and row["state"] in ("queued", "running"):
+                raise RuntimeError("Project already has a running or queued job")
+            manifest = core.load(project_id)
+            if manifest["status"] != "complete":
+                raise RuntimeError("Only completed projects can change narration voice")
+            request = core.Request.model_validate({
+                **manifest["request"],
+                "voice_id": voice_id,
+                "voice_speed": voice_speed,
+            })
+            if request.voice_provider != "kokoro":
+                raise RuntimeError("Reusable voice controls currently require Kokoro narration")
+            # Store the resolved voice so later retries/regeneration are reproducible
+            # even if machine environment variables change.
+            resolved = core.resolve_kokoro_voice(request.language, request.voice_id)
+            request = request.model_copy(update={"voice_id": resolved})
+            manifest["request"] = request.model_dump()
+            manifest.update(status="queued", stage="queued to regenerate narration", error=None)
+            core.atomic_write(core.project_path(project_id) / "timeline.json", manifest)
+            db.execute("""INSERT INTO jobs(project_id,kind,state,updated_at) VALUES(?,?,?,?)
+                ON CONFLICT(project_id) DO UPDATE SET kind='revoice',scene_id=NULL,state='queued',token=NULL,
+                lease_until=NULL,cancel_requested=0,updated_at=excluded.updated_at""",
+                (project_id, "revoice", "queued", time.time()))
+            return manifest
+
+
     def claim(self) -> dict | None:
         now = time.time()
         with self.connect() as db:
@@ -190,6 +220,8 @@ def worker_loop(store: JobStore, stop: threading.Event) -> None:
                 core.regenerate_work(project_id, job["scene_id"], check)
             elif job["kind"] == "render":
                 core.render_work(project_id, check)
+            elif job["kind"] == "revoice":
+                core.revoice_work(project_id, check)
             else:
                 core.process(project_id, check)
             state = core.load(project_id)["status"]

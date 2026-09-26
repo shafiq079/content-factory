@@ -7,7 +7,7 @@ type AudioMode = 'narration' | 'native' | 'hybrid';
 type GenerationMode = 'fast' | 'quality';
 type Scene = {id:number; narration:string; visual_prompt:string; duration:number; status:string; beat?:string; continuity?:string; audio_mode?:AudioMode; generation_mode?:GenerationMode; clip?:string; source_ids?:number[]};
 type Source = {id:number; title:string; url:string; excerpt:string};
-type Project = {id:string; status:string; stage:string; error?:string; revision?:number; caption_style?:CaptionStyle; scenes:Scene[]; assets:Record<string,string>; idea?:string; hook?:string; script?:string; story_arc?:string; visual_bible?:string; research?:Source[]; request:{video_provider:string; voice_provider:string; planner_provider:string; generation_mode?:GenerationMode}};
+type Project = {id:string; status:string; stage:string; error?:string; revision?:number; caption_style?:CaptionStyle; scenes:Scene[]; assets:Record<string,string>; idea?:string; hook?:string; script?:string; story_arc?:string; visual_bible?:string; research?:Source[]; request:{video_provider:string; voice_provider:string; planner_provider:string; generation_mode?:GenerationMode; language?:string; voice_id?:string; voice_speed?:number}};
 
 export default function Home() {
   const [topic, setTopic] = useState('Black holes');
@@ -18,6 +18,8 @@ export default function Home() {
   const [video, setVideo] = useState('preview');
   const [generationMode, setGenerationMode] = useState<GenerationMode>('fast');
   const [voice, setVoice] = useState('silent');
+  const [voiceId, setVoiceId] = useState('');
+  const [voiceSpeed, setVoiceSpeed] = useState(1);
   const [planner, setPlanner] = useState('template');
   const [research, setResearch] = useState('auto');
   const [id, setId] = useState('');
@@ -27,6 +29,8 @@ export default function Home() {
   const [captionStyle, setCaptionStyle] = useState<CaptionStyle | null>(null);
   const [edit, setEdit] = useState<Record<number, string>>({});
   const [audioModeEdit, setAudioModeEdit] = useState<Record<number, AudioMode>>({});
+  const [projectVoiceId, setProjectVoiceId] = useState<string | null>(null);
+  const [projectVoiceSpeed, setProjectVoiceSpeed] = useState<number | null>(null);
   useEffect(() => {
     if (!id) return;
     let cancelled = false;
@@ -43,7 +47,7 @@ export default function Home() {
   async function start() {
     setBusy(true); setError(''); setProject(null);
     try {
-      const res = await fetch(`${API}/projects`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({topic,duration,language,style,instructions,video_provider:video,generation_mode:video==='ltx25'?generationMode:'fast',voice_provider:voice,planner_provider:planner,research_provider:research})});
+      const res = await fetch(`${API}/projects`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({topic,duration,language,style,instructions,video_provider:video,generation_mode:video==='ltx25'?generationMode:'fast',voice_provider:voice,voice_id:voice==='kokoro'?voiceId:'',voice_speed:voice==='kokoro'?voiceSpeed:1,planner_provider:planner,research_provider:research})});
       if (!res.ok) throw new Error(await res.text());
       const data:Project = await res.json(); setId(data.id); setProject(data);
       history.replaceState(null, '', `?project=${data.id}`);
@@ -65,6 +69,18 @@ export default function Home() {
       const res = await fetch(`${API}/projects/${id}/${action}`, {method:'POST'});
       if (!res.ok) throw new Error(await res.text());
       setProject(await res.json());
+    } catch(e) { setError(String(e)); }
+  }
+  async function applyVoice() {
+    if (!id || !project || project.request.voice_provider !== 'kokoro') return;
+    setError('');
+    try {
+      const res = await fetch(`${API}/projects/${id}/voice`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({
+        voice_id: projectVoiceId ?? project.request.voice_id ?? '',
+        voice_speed: projectVoiceSpeed ?? project.request.voice_speed ?? 1
+      })});
+      if (!res.ok) throw new Error(await res.text());
+      setProject(await res.json()); setProjectVoiceId(null); setProjectVoiceSpeed(null);
     } catch(e) { setError(String(e)); }
   }
   async function renderAgain() {
@@ -89,6 +105,7 @@ export default function Home() {
       <label>LTX generation quality<select value={generationMode} disabled={video!=='ltx25'} onChange={e=>setGenerationMode(e.target.value as GenerationMode)}><option value="fast">Fast · Distilled</option><option value="quality">Quality · DFR production path</option></select></label>
       <label>Topic research<select value={research} onChange={e=>setResearch(e.target.value)}><option value="auto">Automatic · Wikipedia with Ollama</option><option value="wikipedia">Wikipedia excerpts</option><option value="none">No external research</option></select></label>
       <label>Narration<select value={voice} onChange={e=>setVoice(e.target.value)}><option value="silent">Silent · pipeline test</option><option value="kokoro">Kokoro · local model</option></select></label>
+      {voice==='kokoro' && <><div className="row"><label>Kokoro voice ID<input value={voiceId} onChange={e=>setVoiceId(e.target.value)} placeholder="Blank = language default, e.g. af_heart" /></label><label>Voice speed<input type="number" min="0.5" max="2" step="0.05" value={voiceSpeed} onChange={e=>setVoiceSpeed(Number(e.target.value))} /></label></div><p className="note">Voice ID may also be a comma-separated Kokoro voice blend. It must match the selected language. Speed 1.0 is normal.</p></>}
       <p className="note">For real content select Ollama, LTX 2.5 and Kokoro. Fast uses the Distilled pipeline; Quality uses DFR and is slower with higher VRAM demand. Preview mode makes simple colored test clips with silent audio.</p>
       <button disabled={busy || !topic.trim()} onClick={start}>{busy?'Starting…':'Generate project →'}</button>
     </div><div className="panel output"><h2>Output</h2>
@@ -97,7 +114,7 @@ export default function Home() {
         {(project.status==='queued' || project.status==='running') && <button className="secondary" onClick={()=>jobAction('cancel')}>Cancel job</button>}
         {(project.status==='failed' || project.status==='cancelled') && <button className="secondary" onClick={()=>jobAction('retry')}>Retry job</button>}
         {project.error && <p className="error">{project.error}</p>}
-        {project.status==='complete' && <><video controls src={asset('final.mp4')+`?v=${project.revision??0}`} playsInline /><div className="links"><a href={asset('final.mp4')}>Final MP4</a><a href={asset('timeline.json')}>Timeline JSON</a><a href={asset('captions.srt')}>Captions SRT</a></div><label>Caption style<select value={captionStyle ?? project.caption_style ?? 'classic'} onChange={e=>setCaptionStyle(e.target.value as CaptionStyle)}><option value="classic">Classic</option><option value="bold">Bold</option><option value="minimal">Minimal</option></select></label><button className="secondary" onClick={renderAgain}>Render again with saved scenes</button></>}
+        {project.status==='complete' && <><video controls src={asset('final.mp4')+`?v=${project.revision??0}`} playsInline /><div className="links"><a href={asset('final.mp4')}>Final MP4</a><a href={asset('timeline.json')}>Timeline JSON</a><a href={asset('captions.srt')}>Captions SRT</a></div>{project.request.voice_provider==='kokoro' && <div className="story"><h3>Narration voice</h3><div className="row"><label>Kokoro voice ID<input value={projectVoiceId ?? project.request.voice_id ?? ''} onChange={e=>setProjectVoiceId(e.target.value)} /></label><label>Voice speed<input type="number" min="0.5" max="2" step="0.05" value={projectVoiceSpeed ?? project.request.voice_speed ?? 1} onChange={e=>setProjectVoiceSpeed(Number(e.target.value))} /></label></div><p className="note">Applying new voice settings regenerates narration and captions, then rerenders using the existing scene clips. It does not call the video model.</p><button className="secondary" onClick={applyVoice}>Apply voice settings</button></div>}<label>Caption style<select value={captionStyle ?? project.caption_style ?? 'classic'} onChange={e=>setCaptionStyle(e.target.value as CaptionStyle)}><option value="classic">Classic</option><option value="bold">Bold</option><option value="minimal">Minimal</option></select></label><button className="secondary" onClick={renderAgain}>Render again with saved scenes</button></>}
         {project.script && <div className="story"><h3>Idea and script</h3><p><strong>{project.idea}</strong></p>{project.story_arc && <p><strong>Story arc:</strong> {project.story_arc}</p>}{project.visual_bible && <p><strong>Visual bible:</strong> {project.visual_bible}</p>}<p>{project.script}</p></div>}
         {!!project.research?.length && <div className="story"><h3>Research notes</h3><p className="note">Shortened Wikipedia excerpts. Source links credit contributors; text is under <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>. Review claims before publishing.</p>{project.research.map(source=><p key={source.id}><a href={source.url} target="_blank" rel="noopener noreferrer">{source.title} ↗</a><br/>{source.excerpt}</p>)}</div>}
         <div className="scenes">{project.scenes.map(s=><article key={s.id}><div className="scene-heading"><strong>Scene {s.id}{s.beat?` · ${s.beat}`:''}</strong><small>{s.duration.toFixed(1)}s · {s.status}{project.request.video_provider==='ltx25'?` · ${s.generation_mode??project.request.generation_mode??'fast'}`:''}</small></div><p>{s.narration}</p>{!!s.source_ids?.length && <div className="links">Sources: {s.source_ids.map(sourceId=>{const source=project.research?.find(item=>item.id===sourceId);return source && <a key={sourceId} href={source.url} target="_blank" rel="noopener noreferrer">{source.title} ↗</a>;})}</div>}<label>Audio<select value={audioModeEdit[s.id]??s.audio_mode??'narration'} onChange={e=>setAudioModeEdit({...audioModeEdit,[s.id]:e.target.value as AudioMode})}><option value="narration">Narration</option><option value="hybrid" disabled={project.request.video_provider!=='ltx25'}>Hybrid · narration + native ambience</option><option value="native" disabled={project.request.video_provider!=='ltx25'}>Native · LTX audio</option></select></label>{s.continuity && <p className="note"><strong>Continuity:</strong> {s.continuity}</p>}<textarea aria-label={`Scene ${s.id} visual prompt`} value={edit[s.id]??s.visual_prompt} onChange={e=>setEdit({...edit,[s.id]:e.target.value})} rows={3}/>{s.clip && <a href={asset(s.clip)}>View clip ↗</a>}{project.status==='complete' && <button className="secondary" onClick={()=>redo(s)}>Regenerate scene</button>}</article>)}</div>

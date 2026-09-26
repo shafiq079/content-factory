@@ -35,8 +35,10 @@ def ltx_check(request: core.Request) -> None:
 
 
 def kokoro_check(request: core.Request) -> None:
-    if request.language.lower() not in ("english", "british english", "spanish", "french", "hindi", "italian", "japanese", "portuguese", "chinese"):
-        raise RuntimeError(f"Kokoro language not configured: {request.language}")
+    try:
+        core.resolve_kokoro_voice(request.language, request.voice_id)
+    except ValueError as exc:
+        raise RuntimeError(str(exc)) from exc
     for package in ("kokoro", "soundfile", "numpy"):
         dependency(package)
 
@@ -82,6 +84,17 @@ def caption_choice(request: core.Request) -> str:
 def preflight(request: core.Request) -> None:
     selections = {"research": research_choice(request), "planner": request.planner_provider, "video": request.video_provider,
                   "voice": request.voice_provider, "captions": caption_choice(request)}
+    for kind, name in selections.items():
+        try:
+            adapter = REGISTRY[kind][name]
+        except KeyError as exc:
+            raise RuntimeError(f"Unknown {kind} provider: {name}") from exc
+        adapter.check(request)
+
+
+def preflight_voice(request: core.Request) -> None:
+    """Check only dependencies needed to regenerate narration/captions, not the GPU video stack."""
+    selections = {"voice": request.voice_provider, "captions": caption_choice(request)}
     for kind, name in selections.items():
         try:
             adapter = REGISTRY[kind][name]

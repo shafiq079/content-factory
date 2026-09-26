@@ -14,7 +14,7 @@ def test_voice_first_timing_and_regeneration(monkeypatch, tmp_path: Path):
     events = []
 
     class FakeVoice:
-        def generate(self, text, output, seconds, language):
+        def generate(self, text, output, seconds, language, voice_id="", speed=1.0):
             events.append(("voice", 1 if "Updated" in text else 0))
             core.run("ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono",
                      "-t", "3" if "Updated" in text else "2", "-c:a", "pcm_s16le", str(output))

@@ -65,6 +65,11 @@ class RenderEdit(BaseModel):
     caption_style: Literal["classic", "bold", "minimal"] = "classic"
 
 
+class VoiceEdit(BaseModel):
+    voice_id: str = Field(default="", max_length=200)
+    voice_speed: float = Field(default=1.0, ge=0.5, le=2.0)
+
+
 @app.post("/projects/{project_id}/scenes/{scene_id}/regenerate", status_code=202)
 def regenerate_scene(project_id: str, scene_id: int, edit: SceneEdit):
     try:
@@ -74,6 +79,28 @@ def regenerate_scene(project_id: str, scene_id: int, edit: SceneEdit):
         raise HTTPException(404, "Project or scene not found")
     except RuntimeError as exc:
         raise HTTPException(409, str(exc))
+
+
+@app.post("/projects/{project_id}/voice", status_code=202)
+def change_project_voice(project_id: str, edit: VoiceEdit):
+    try:
+        manifest = load(project_id)
+        request = Request.model_validate({
+            **manifest["request"],
+            "voice_id": edit.voice_id,
+            "voice_speed": edit.voice_speed,
+        })
+        providers.preflight_voice(request)
+    except FileNotFoundError:
+        raise HTTPException(404, "Project not found")
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    try:
+        return app.state.jobs.enqueue_revoice(project_id, edit.voice_id, edit.voice_speed)
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 
 @app.post("/projects/{project_id}/render", status_code=202)
