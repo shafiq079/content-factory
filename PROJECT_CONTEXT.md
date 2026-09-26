@@ -47,6 +47,7 @@ Typical output is a 30–120 second vertical video, especially 60–120 second r
 - Scene prompt editing
 - Per-scene audio mode controls
 - LTX Fast / Quality selector
+- Wan 2.2 TI2V-5B video engine selector (narration mode for generated clips)
 - Scene regeneration
 - Caption-style rerendering
 - Scene clip and narration audio replacement, scene text editor and grouped scene controls
@@ -63,7 +64,7 @@ Typical output is a 30–120 second vertical video, especially 60–120 second r
 ### AI / Media
 - Planner: Ollama-compatible local LLM
 - Research v2: Wikipedia article extracts plus optional self-hosted SearXNG search and Trafilatura page extraction
-- Video: LTX 2.5
+- Video: LTX 2.5 and optional Wan 2.2 TI2V-5B
 - Narration: Kokoro with project-level voice ID / blend / speed settings and cached per-language runtime
 - Captions: script timing or faster-whisper
 - Editing / assembly: FFmpeg
@@ -101,6 +102,14 @@ Current DFR settings:
 - the temporal-upscaler checkpoint is therefore not required yet
 
 Only one heavyweight LTX runtime is kept alive. Switching Fast <-> Quality replaces the active runtime rather than keeping both large pipelines resident in GPU memory.
+
+### Wan 2.2 TI2V-5B (second modular video provider)
+
+- `video_provider=wan22` uses the official local Wan2.2 `WanTI2V` Python pipeline with the original `Wan-AI/Wan2.2-TI2V-5B` checkpoint layout. The official upstream checkout and checkpoints are operator-supplied via `WAN22_REPO` and `WAN22_CHECKPOINT`; its GPU dependencies are installed from the official Wan repo only on the GPU worker. No API service, paid dependency or model download occurs in a job.
+- Preflight verifies the checkout, config, T5 encoder, VAE, tokenizer, every indexed model shard, installed packages and CUDA before project creation. Preview and LTX remain usable without Wan. The official 704×1280/1280×704 single-GPU offload example calls for at least 24 GB VRAM; real output and hardware performance remain unverified without GPU.
+- A single Wan pipeline is cached across scenes and scene-only regeneration. A shared GPU lock and runtime eviction keep Wan and LTX from occupying the GPU simultaneously. Wan uses its documented standard sampler and default 121-frame maximum at 24 fps; generated video is speed-adjusted with FFmpeg to match the canonical scene duration. Longer 5–8 second scenes can therefore have slower-looking motion. `WAN22_SEED` defaults to 42 plus scene ID.
+- Wan-generated clips have **no native audio**; initial planning selects narration only. Existing Kokoro/silent voice, captions, transitions, batch editor, evidence review, asset preservation, persistent jobs, render and OTIO workflows are reused. Native or hybrid audio may use uploaded clips with an audio track; a Wan scene must be switched back to narration before regenerating video. The app does not represent silent Wan output as synchronized dialogue.
+- The persisted v7 `request.video_provider` distinguishes Wan from LTX. Existing `generation_mode=fast` is an internal default for video engines other than LTX; the LTX Fast/Quality selector has no effect on Wan. Schema version stays 7.
 
 ## 5. Audio Architecture
 
@@ -315,11 +324,12 @@ Important completed milestones:
 - Research v2 structured source evidence, optional SearXNG, safer article extraction, conflict review and numeric grounding
 - automated factual evidence review/repair gate before expensive generation and factual rerenders; timeline v7 migration
 - selected-scene batch transitions and audio-mode edits through one restart-safe job and final render
+- optional Wan 2.2 TI2V-5B text-to-video adapter with CPU-only fake-provider integration tests
 - GitHub Actions frontend build + backend CPU tests
 
 ### Most recent completed development work
 
-**Focused scene batch editing** now allows selected scenes to share one transition or audio mode update through one persistent job. The entire selection is validated before queueing, missing narration is created at new paths before activation, and the worker rebuilds captions and renders once. Errors keep the previous editable timeline and media. Claim review remains in effect without repeated reviews for unchanged narration. The frontend shows the expected execution cost. Timeline v7 remains unchanged. GPU generation remains unverified. Next recommended task: add Wan as a second modular video provider, keeping the existing LTX and preview adapters.
+**Wan as a second video provider** now routes a project's text-to-video scenes through an optional local Wan 2.2 TI2V-5B pipeline, with existing narration, evidence review, render and scene editing retained. It validates local setup before queueing, caches the upstream model per worker, caps generation at the official 121-frame default, and evicts the other GPU video family on a provider switch. Generated Wan clips are video-only. Timeline v7 remains unchanged. CPU tests use a fake Wan pipeline and fake provider; no real Wan/LTX footage has been GPU validated. Next recommended task: GPU validation and quality comparison of Wan and LTX Fast/DFR, followed by scene pacing and prompt tuning based on actual footage.
 
 ## 11. Important Source Files
 
@@ -340,6 +350,9 @@ Important completed milestones:
 - `backend/app/providers.py`
   - provider registry
   - preflight checks
+
+- `backend/app/wan_video.py`
+  - optional official Wan TI2V-5B runtime, checkpoint checks, generation and clip normalization
 
 - `backend/app/research.py`
   - bounded research adapters, secure page retrieval, extracted evidence and conflict hints
@@ -396,10 +409,9 @@ When a GPU becomes available, the first validation should compare identical prom
 
 Current priority order:
 
-1. Add Wan as a second modular video provider
-2. Real GPU validation of LTX Fast vs DFR Quality
-3. Quality tuning based on real generated outputs
-4. Social publishing/analytics only after generation quality is proven
+1. Real GPU validation of Wan 2.2 TI2V-5B and LTX Fast vs DFR Quality
+2. Tune pacing, prompts, audio and consistency based on real generated outputs
+3. Social publishing/analytics only after generation quality is proven
 
 ## 14. Development Rules for Future Agents
 

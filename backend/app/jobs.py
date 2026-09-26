@@ -72,9 +72,11 @@ class JobStore:
                 raise RuntimeError("Only completed projects can regenerate scenes")
             scene = next((s for s in manifest["scenes"] if s["id"] == scene_id), None)
             if scene is None:
-                raise ValueError("Unknown scene")
+                raise LookupError("Unknown scene")
             if audio_mode is not None and audio_mode not in ("narration", "native", "hybrid"):
                 raise ValueError("Unknown audio mode")
+            if manifest["request"].get("video_provider") == "wan22" and (audio_mode or scene.get("audio_mode", "narration")) != "narration":
+                raise ValueError("Wan video regeneration requires Narration mode; switch this scene before regenerating")
             if visual_prompt is not None:
                 scene["visual_prompt"] = visual_prompt
             if narration is not None:
@@ -107,8 +109,9 @@ class JobStore:
         """Activate an imported asset and rerender without a video model."""
         def edit(manifest: dict, scene: dict) -> str:
             if asset == "clip":
-                if scene.get("audio_mode") == "native" and not core.media.has_audio(core.project_path(project_id) / path):
-                    raise ValueError("Native audio mode requires a video with an audio track")
+                if (scene.get("audio_mode") == "native" or
+                        (manifest["request"].get("video_provider") == "wan22" and scene.get("audio_mode") == "hybrid")) and not core.media.has_audio(core.project_path(project_id) / path):
+                    raise ValueError(f"Scene {scene['id']} audio mode requires a video with an audio track")
                 scene["clip"] = path
                 scene["clip_origin"] = "uploaded"
                 return "timeline"
@@ -138,15 +141,15 @@ class JobStore:
     def enqueue_scene_audio_mode(self, project_id: str, scene_id: int, mode: str) -> dict:
         def edit(manifest: dict, scene: dict) -> str:
             folder = core.project_path(project_id)
-            if mode == "native":
+            if mode == "native" or (mode == "hybrid" and manifest["request"].get("video_provider") == "wan22"):
                 if not core.media.has_audio(folder / scene["clip"]):
-                    raise ValueError("Native audio requires an active clip with an audio track")
-            elif not scene.get("voice"):
+                    raise ValueError(f"{mode.capitalize()} audio requires an active clip with an audio track")
+            if mode != "native" and not scene.get("voice"):
                 scene["voice"] = f"voice/scene-{scene_id:02d}-{uuid.uuid4().hex}.wav"
                 scene["voice_origin"] = "generated"
                 scene["audio_mode"] = mode
                 return "narration"
-            else:
+            if mode != "native":
                 measured = core.media.validate_voice(folder / scene["voice"], scene["duration"], False)
                 scene["duration"] = round(measured.duration, 3)
             scene["audio_mode"] = mode

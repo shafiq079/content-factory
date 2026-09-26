@@ -11,6 +11,7 @@ from typing import Callable
 from urllib.parse import urlparse
 
 from . import core, research
+from .wan_video import Wan22Video
 
 
 @dataclass(frozen=True)
@@ -70,7 +71,8 @@ REGISTRY: dict[str, dict[str, Adapter]] = {
     "research": {"none": Adapter(research.NoResearch, ready), "wikipedia": Adapter(research.WikipediaResearch, ready),
                  "broader": Adapter(research.BroaderResearch, ready)},
     "planner": {"template": Adapter(core.TemplatePlanner, ready), "ollama": Adapter(core.OllamaPlanner, ollama_check)},
-    "video": {"preview": Adapter(core.PreviewVideo, ready), "ltx25": Adapter(core.LTX25Video, ltx_check)},
+    "video": {"preview": Adapter(core.PreviewVideo, ready), "ltx25": Adapter(core.LTX25Video, ltx_check),
+              "wan22": Adapter(Wan22Video, Wan22Video.preflight)},
     "voice": {"silent": Adapter(core.SilentVoice, ready), "kokoro": Adapter(core.KokoroVoice, kokoro_check)},
     "captions": {"script": Adapter(lambda: None, ready), "whisper": Adapter(lambda: None, whisper_check)},
 }

@@ -42,6 +42,12 @@ This is still **not human fact checking**. Automated approval means the narratio
 4. Install and start [Ollama](https://github.com/ollama/ollama) and pull a JSON-capable model. Set `OLLAMA_MODEL` and optionally `OLLAMA_URL` (local service only). Factual projects automatically run a second evidence-review pass; set `OLLAMA_REVIEW_MODEL` to another installed model if you want planner/reviewer separation, otherwise the planner model is reused. Set `CAPTION_PROVIDER=whisper` to transcribe Kokoro output with faster-whisper; optionally set `WHISPER_MODEL=small`, `WHISPER_DEVICE=cpu`, `WHISPER_COMPUTE=int8`. Kokoro voice and speed are project settings in the UI. A blank voice ID resolves once to the language default (or `KOKORO_VOICE` if configured) and that resolved ID is persisted in the project so later regeneration is reproducible. Kokoro also supports comma-separated voice blends. Speed is limited by this app to `0.5–2.0`, with `1.0` as normal.
 5. In the UI choose **Ollama**, **LTX 2.5**, **Kokoro**, then choose **Fast · Distilled** for drafts or **Quality · DFR production path** for final-quality generation. Before a project is queued, the backend checks the selected mode's dependencies and checkpoint paths plus the Ollama model. Missing setup returns a descriptive HTTP 422 error; no fake video is silently substituted.
 
+### Optional Wan 2.2 video engine
+
+For text-to-video without native sound, clone the [official Wan2.2 repository](https://github.com/Wan-Video/Wan2.2), install its own `requirements.txt` in the backend GPU worker environment, and download the **Wan-AI/Wan2.2-TI2V-5B** (original Wan format, not the Diffusers conversion) into a local directory using the [official instructions](https://github.com/Wan-Video/Wan2.2#run-text-image-to-video-generation). Set `WAN22_REPO` to the checkout and `WAN22_CHECKPOINT` to the downloaded model directory; `WAN22_SEED` optionally sets the base seed (default 42). The backend checks the model config, VAE, text encoder, tokenizer and weight shards, installed packages and CUDA before queueing. The official single-GPU offload example specifies **at least 24 GB VRAM**. Choose **Wan 2.2 TI2V-5B** and **Kokoro** in the UI; the LTX Fast/Quality control does not apply to Wan. No paid service or live download is required while a job runs.
+
+Wan generates a silent video clip at 704×1280 for vertical projects or 1280×704 for horizontal projects. Every newly generated Wan scene uses narration; native and hybrid modes are only available when compatible uploaded scene media supplies audio. The adapter holds one Wan runtime across scenes, unloads an existing LTX runtime when switching engines, and returns a validated MP4 to the existing editor. Wan inference is capped at its default 121 frames at 24 fps; longer planned scenes are slowed to fit their saved duration. This preserves timing, though motion may look slower in 5–8 second scenes. Wan model output has **not** been checked on a GPU in this project yet.
+
 ## Editable output and behavior
 
 Each project lives in `content-factory/projects/<uuid>/`: `timeline.json` (the canonical timeline), `clips/`, `voice/`, optional project-scoped `audio/music/` and `audio/sfx/` assets, `captions.srt`, `final.mp4`, and intermediate `work/` files. If `opentimelineio` is installed, `timeline.otio` is also written. Timeline JSON contains request settings, research sources and brief, idea, story arc, visual bible, hook, full script, scene beats, continuity notes, prompts, narration, source IDs, duration, start times, asset paths, state and error. Schema version 7 is validated when loaded; older manifests are upgraded in place and unknown future versions are rejected. Timeline v7 also stores the automated claim-review status, reviewer/model, evidence-linked scene results, automatic revisions, attempts and limitations. The OTIO file is an interchange export, not the source of truth. Editor compatibility depends on the editor and available adapters.
@@ -67,17 +73,17 @@ The server stores projects on disk and uses a SQLite job queue in the project di
 ## Scope and present limitations
 
 - The template planner is a deterministic test fixture. Self-hosted search quality depends on the instance's engines, and many pages cannot be extracted (paywalls, PDF, scripts or large pages). Without SearXNG, automatic Ollama projects fall back to Wikipedia. Numeric checks, source IDs and the automated reviewer improve evidence alignment but do not prove every statement true or resolve all contextual disagreements. The reviewer is another LLM pass, not a human fact checker.
-- The first real video provider is LTX 2.5 with two generation modes: `fast` uses the official DistilledPipeline and `quality` uses the official DFR production path with the detailing IC-LoRA and one spatial refinement round. Raw LTX scene files keep synchronized native audio. Final assembly supports scene-level `narration`, `native` and `hybrid` routing; hybrid lowers native audio under the dedicated narrator. `native` requires the active clip to contain an audio stream. Temporal DFR upscaling is intentionally disabled for now, so the separate temporal-upscaler checkpoint is not required.
+- LTX 2.5 supports `fast` Distilled and `quality` DFR with a detailing IC-LoRA. Raw LTX clips keep synchronized native audio. Wan 2.2 TI2V-5B is the second modular video engine and generates silent clips with dedicated narration. Final assembly supports `narration`, `native` and `hybrid` routing when the active clip has the required audio. Temporal DFR upscaling remains disabled.
 - Without `CAPTION_PROVIDER=whisper`, caption timing is estimated from the script and distributed evenly across each scene. Whisper mode transcribes generated voice with word timestamps but does not guarantee perfect forced alignment; review captions before publishing.
-- The UI edits visual prompts and narration, imports scene media, offers three caption styling presets, project background music, timeline SFX, scene reordering, duration-preserving transitions and focused transition/audio-mode batch edits. Multi-track editing, more transition families and Wan are future additions.
+- The UI edits visual prompts and narration, imports scene media, offers three caption styling presets, project background music, timeline SFX, scene reordering, duration-preserving transitions and focused transition/audio-mode batch edits. Multi-track editing and more transition families are future additions.
 - Generated footage has **not** been verified in this workspace because it has no NVIDIA GPU, official checkpoint files or Ollama/Kokoro installations. Only the preview mode was run end to end.
 
-## Technical choices and licenses (checked 25 September 2026)
+## Technical choices and licenses (checked 26 September 2026)
 
 | Component | Decision | Important condition |
 | --- | --- | --- |
 | LTX 2.5 | Official Python `DistilledPipeline` (Fast) and `DFRPipeline` (Quality), split weights; local GPU inference | DFR uses the same distilled transformer plus the separate detailing IC-LoRA. LTX 2.x community license, **not** Apache. Read the current terms before distribution. |
-| Wan 2.2 TI2V-5B | Strong next video adapter candidate | Official repo: Apache 2.0; its 720p single-GPU offload example specifies at least 24 GB VRAM. Not integrated yet. |
+| Wan 2.2 TI2V-5B | Optional official local Python pipeline; text-to-video scene clips | Official repo/model: Apache 2.0; its 720p single-GPU offload example specifies at least 24 GB VRAM. GPU generation has not been verified here. |
 | Kokoro 82M | Local narration adapter | Official inference repo describes Apache-licensed weights and code; language and voice availability vary. |
 | faster-whisper | Optional local word timestamp transcription | MIT implementation; CPU int8 is supported. Transcription is separate from precise forced alignment. |
 | FFmpeg | Concatenation, scaling, audio and burned captions | System package/license depends on build options; project requires `subtitles` filter. |
@@ -89,8 +95,8 @@ Official references: [LTX-2 inference and model paths](https://github.com/Lightr
 
 GPU validation is intentionally deferred until suitable hardware is available. Current development should continue on CPU-testable product and pipeline work.
 
-1. Add another modular video provider such as Wan, preserving the current provider and scene contracts.
-2. When a GPU becomes available, validate LTX Fast vs DFR Quality and tune generation based on real outputs.
+1. When a GPU becomes available, validate both Wan and LTX Fast/DFR with the official checkpoints, inspect voice and scene pacing, and compare quality, runtime and VRAM.
+2. Tune model prompts, duration and consistency based on real generated outputs.
 
 ## GitHub development
 
