@@ -614,6 +614,8 @@ def export_otio(project_dir: Path, scenes: list[dict]) -> None:
         span = otio.opentime.TimeRange(otio.opentime.RationalTime(0,rate), otio.opentime.RationalTime(round(s["duration"]*rate),rate))
         track.append(otio.schema.Clip(name=f"Scene {s['id']}", media_reference=media, source_range=span,
                                       metadata={"narration": s["narration"], "prompt": s["visual_prompt"],
+                                                "beat": s.get("beat", "build"),
+                                                "continuity": s.get("continuity", ""),
                                                 "audio_mode": s.get("audio_mode", "narration"),
                                                 "generation_mode": s.get("generation_mode", "fast")}))
     otio.adapters.write_to_file(timeline, str(project_dir / "timeline.otio"))
