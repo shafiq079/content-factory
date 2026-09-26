@@ -42,6 +42,8 @@ class Request(BaseModel):
     planner_provider: str = "template"
     research_provider: str = "auto"
     generation_mode: str = "fast"
+    voice_id: str = Field(default="", max_length=200)
+    voice_speed: float = Field(default=1.0, ge=0.5, le=2.0)
 
     @field_validator("video_provider")
     @classmethod
@@ -55,6 +57,14 @@ class Request(BaseModel):
     def generation_mode_choice(cls, value: str) -> str:
         if value not in ("fast", "quality"):
             raise ValueError("Choose fast or quality")
+        return value
+
+    @field_validator("voice_id")
+    @classmethod
+    def voice_id_choice(cls, value: str) -> str:
+        value = value.strip()
+        if value and not re.fullmatch(r"[A-Za-z0-9_.-]+(?:,[A-Za-z0-9_.-]+)*", value):
+            raise ValueError("Voice ID must contain only letters, numbers, underscore, dot, dash, or comma-separated voice IDs")
         return value
 
     @field_validator("voice_provider")
@@ -479,27 +489,90 @@ class LTX25Video(VideoGenerator):
             raise RuntimeError(f"LTX {mode} pipeline completed without a video")
 
 
+KOKORO_LANGUAGE_CODES = {
+    "english": "a",
+    "british english": "b",
+    "spanish": "e",
+    "french": "f",
+    "hindi": "h",
+    "italian": "i",
+    "japanese": "j",
+    "portuguese": "p",
+    "chinese": "z",
+}
+
+KOKORO_DEFAULT_VOICES = {
+    "a": "af_heart",
+    "b": "bf_emma",
+    "e": "ef_dora",
+    "f": "ff_siwis",
+    "h": "hf_alpha",
+    "i": "if_sara",
+    "j": "jf_alpha",
+    "p": "pf_dora",
+    "z": "zf_xiaobei",
+}
+
+
+def kokoro_language_code(language: str) -> str:
+    code = KOKORO_LANGUAGE_CODES.get(language.lower())
+    if not code:
+        raise ValueError(f"Kokoro language not configured: {language}")
+    return code
+
+
+def resolve_kokoro_voice(language: str, requested: str = "") -> str:
+    """Resolve and validate a reproducible Kokoro voice or comma-separated blend."""
+    code = kokoro_language_code(language)
+    voice = requested.strip() or os.getenv("KOKORO_VOICE", "").strip() or KOKORO_DEFAULT_VOICES[code]
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+(?:,[A-Za-z0-9_.-]+)*", voice):
+        raise ValueError("Invalid Kokoro voice ID")
+    parts = voice.split(",")
+    if any(not part.startswith(code) for part in parts):
+        raise ValueError(f"Kokoro voice must match language code '{code}'")
+    return voice
+
+
 class VoiceGenerator(ABC):
     @abstractmethod
-    def generate(self, text: str, output: Path, seconds: float, language: str) -> None: ...
+    def generate(self, text: str, output: Path, seconds: float, language: str,
+                 voice_id: str = "", speed: float = 1.0) -> None: ...
 
 
 class SilentVoice(VoiceGenerator):
-    def generate(self, text: str, output: Path, seconds: float, language: str) -> None:
-        run("ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono", "-t", str(seconds), "-c:a", "pcm_s16le", str(output))
+    def generate(self, text: str, output: Path, seconds: float, language: str,
+                 voice_id: str = "", speed: float = 1.0) -> None:
+        run("ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono",
+            "-t", str(seconds), "-c:a", "pcm_s16le", str(output))
 
 
 class KokoroVoice(VoiceGenerator):
-    def generate(self, text: str, output: Path, seconds: float, language: str) -> None:
-        from kokoro import KPipeline
+    """Reuse one Kokoro pipeline per language across scenes and later jobs."""
+
+    _pipelines: dict[str, object] = {}
+    _pipeline_lock = threading.Lock()
+    _inference_lock = threading.Lock()
+
+    @classmethod
+    def _pipeline(cls, code: str):
+        with cls._pipeline_lock:
+            pipeline = cls._pipelines.get(code)
+            if pipeline is None:
+                from kokoro import KPipeline
+                pipeline = KPipeline(lang_code=code)
+                cls._pipelines[code] = pipeline
+            return pipeline
+
+    def generate(self, text: str, output: Path, seconds: float, language: str,
+                 voice_id: str = "", speed: float = 1.0) -> None:
         import numpy as np
         import soundfile as sf
-        codes = {"english": "a", "british english": "b", "spanish": "e", "french": "f", "hindi": "h", "italian": "i", "japanese": "j", "portuguese": "p", "chinese": "z"}
-        code = codes.get(language.lower())
-        if not code:
-            raise ValueError(f"Kokoro language not configured: {language}")
-        voice = os.getenv("KOKORO_VOICE", "af_heart" if code == "a" else {"b":"bf_emma","h":"hf_alpha","e":"ef_dora","f":"ff_siwis","i":"if_sara","j":"jf_alpha","p":"pf_dora","z":"zf_xiaobei"}[code])
-        audio = [chunk for _, _, chunk in KPipeline(lang_code=code)(text, voice=voice)]
+
+        code = kokoro_language_code(language)
+        voice = resolve_kokoro_voice(language, voice_id)
+        pipeline = self._pipeline(code)
+        with self._inference_lock:
+            audio = [chunk for _, _, chunk in pipeline(text, voice=voice, speed=speed)]
         if not audio:
             raise RuntimeError("Kokoro produced no audio")
         sf.write(output, np.concatenate(audio), 24000)
@@ -640,6 +713,8 @@ def load(project_id: str) -> dict:
 
 
 def create(request: Request) -> dict:
+    if request.voice_provider == "kokoro" and not request.voice_id:
+        request = request.model_copy(update={"voice_id": resolve_kokoro_voice(request.language)})
     project_id = uuid.uuid4().hex
     folder = ROOT / project_id
     folder.mkdir()
@@ -679,7 +754,7 @@ def ensure_scene_media(folder: Path, manifest: dict, scene: dict, req: Request,
             save(f"voicing scene {scene['id']}/{len(manifest['scenes'])}")
             partial = audio.with_name(audio.stem + ".partial.wav")
             partial.unlink(missing_ok=True)
-            voice.generate(scene["narration"], partial, target, req.language)
+            voice.generate(scene["narration"], partial, target, req.language, req.voice_id, req.voice_speed)
             measured = media.validate_voice(partial, target, req.voice_provider == "silent")
             partial.replace(audio)
         if measured is None:
@@ -823,6 +898,88 @@ def regenerate_work(project_id: str, scene_id: int, is_cancelled: Callable[[], b
     except Exception as exc:
         manifest.update(status="failed", stage="failed", error=f"{type(exc).__name__}: {exc}")
     atomic_write(folder / "timeline.json", manifest)
+
+
+def revoice_work(project_id: str, is_cancelled: Callable[[], bool] = lambda: False) -> None:
+    """Regenerate narration with saved clips; never call a video model."""
+    from . import providers
+
+    folder = project_path(project_id)
+    manifest = load(project_id)
+    req = Request.model_validate(manifest["request"])
+
+    def save(stage: str) -> None:
+        manifest["stage"] = stage
+        atomic_write(folder / "timeline.json", manifest)
+
+    temp_files: list[Path] = []
+    try:
+        if is_cancelled():
+            raise JobCancelled("Cancellation requested")
+        providers.preflight(req)
+        voice = providers.make("voice", req.voice_provider)
+        manifest.update(status="running", error=None)
+        save("regenerating narration")
+
+        measured_by_scene: dict[int, float] = {}
+        final_paths: dict[int, Path] = {}
+        for scene in manifest["scenes"]:
+            if is_cancelled():
+                raise JobCancelled("Cancellation requested")
+            if scene.get("audio_mode", "narration") == "native":
+                scene["voice"] = None
+                measured_by_scene[scene["id"]] = scene.get("planned_duration") or scene["duration"]
+                continue
+
+            target = scene.get("planned_duration") or scene["duration"]
+            voice_rel = scene.get("voice") or f"voice/scene-{scene['id']:02d}.wav"
+            scene["voice"] = voice_rel
+            final_path = folder / voice_rel
+            final_path.parent.mkdir(exist_ok=True)
+            partial = final_path.with_name(final_path.stem + ".revoice.partial.wav")
+            partial.unlink(missing_ok=True)
+            temp_files.append(partial)
+            save(f"revoicing scene {scene['id']}/{len(manifest['scenes'])}")
+            voice.generate(scene["narration"], partial, target, req.language, req.voice_id, req.voice_speed)
+            measured = media.validate_voice(partial, target, req.voice_provider == "silent")
+            measured_by_scene[scene["id"]] = round(measured.duration, 3) if req.voice_provider == "kokoro" else target
+            final_paths[scene["id"]] = final_path
+
+        # Commit the new narration only after all required scenes synthesize successfully.
+        for scene in manifest["scenes"]:
+            if scene.get("audio_mode", "narration") == "native":
+                scene["duration"] = measured_by_scene[scene["id"]]
+                continue
+            final_path = final_paths[scene["id"]]
+            partial = final_path.with_name(final_path.stem + ".revoice.partial.wav")
+            partial.replace(final_path)
+            temp_files.remove(partial)
+            scene["duration"] = measured_by_scene[scene["id"]]
+
+        start = 0.0
+        for scene in manifest["scenes"]:
+            scene["start"] = round(start, 3)
+            start += scene["duration"]
+        manifest["duration_actual"] = round(start, 3)
+
+        save("captions")
+        captions(manifest["scenes"], folder, providers.caption_choice(req) == "whisper")
+        if is_cancelled():
+            raise JobCancelled("Cancellation requested")
+        save("rendering with new narration")
+        render(folder, manifest)
+        export_otio(folder, manifest["scenes"])
+        manifest["revision"] = manifest.get("revision", 0) + 1
+        manifest.update(status="complete", stage="complete", error=None)
+    except JobCancelled:
+        manifest.update(status="cancelled", stage="cancelled", error=None)
+    except Exception as exc:
+        manifest.update(status="failed", stage="failed", error=f"{type(exc).__name__}: {exc}")
+    finally:
+        for path in temp_files:
+            path.unlink(missing_ok=True)
+        atomic_write(folder / "timeline.json", manifest)
+
 
 
 def render_work(project_id: str, is_cancelled: Callable[[], bool] = lambda: False) -> None:
