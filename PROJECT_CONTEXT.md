@@ -60,6 +60,7 @@ Typical output is a 30–120 second vertical video, especially 60–120 second r
 - Filesystem project storage
 - Pydantic request/timeline contracts
 - CPU test suite through GitHub Actions
+- Prototype/dev CORS is intentionally wildcard (`allow_origins=["*"]`, credentials disabled) so Codespaces, localhost and temporary preview origins work without per-origin code changes. Before any public production deployment, replace this with an explicit origin allowlist and authentication.
 
 ### AI / Media
 - Planner: Ollama-compatible local LLM
