@@ -125,7 +125,26 @@ Best for scenes where a visible character/person should speak or where native sy
 
 Best for cinematic narration where environmental sound improves the scene.
 
-FFmpeg performs the final audio routing and mix.
+FFmpeg performs the scene audio routing and mix.
+
+### Background music and SFX master layer
+
+Implemented after scene assembly:
+- project-scoped background music assets under `audio/music/`
+- project-scoped sound effects under `audio/sfx/`
+- common audio uploads are limited to 30 MB and validated as decodable audio-only media before use
+- background music metadata: provider, asset, enabled, volume, loop, fade-in and fade-out
+- SFX metadata: stable ID, provider, asset, enabled, timeline start, duration, volume and fades
+- music and SFX are mixed over the already assembled narration/native/hybrid scene audio, so source scene media is never destructively rewritten
+- short music can loop to the final timeline duration; non-looped music plays once and is trimmed when necessary
+- music at volume 0 is skipped before its file is opened
+- SFX are delayed to their timeline start and clipped to the remaining project duration
+- final audio uses an FFmpeg limiter after mixing to reduce clipping risk
+- music/SFX changes are render-only jobs and never call the video model
+- timeline JSON is canonical; OTIO export also records music/SFX metadata
+- current providers are project uploads, but the timeline/provider contract is intentionally ready for later local/generated music or SFX providers
+
+The implementation uses MoneyPrinterTurbo's MIT-licensed BGM behavior as a design reference for practical concerns such as safe uploads, source validation, zero-volume short-circuiting, looping and fades. Content Factory keeps its own FFmpeg/timeline-oriented implementation rather than adopting MoneyPrinterTurbo's MoviePy pipeline.
 
 ### Reusable narration voice controls
 
@@ -229,11 +248,12 @@ Important completed milestones:
 - LTX DFR Quality mode
 - frontend controls for video quality and audio routing
 - reusable Kokoro voice ID/blend/speed controls and GPU-independent project revoice workflow
+- editable project background music and timeline SFX with render-only FFmpeg mixing
 - GitHub Actions frontend build + backend CPU tests
 
 ### Most recent completed development work
 
-**Reusable Kokoro voice controls** are implemented on top of AI Director v2. Projects can choose and persist a Kokoro voice ID/blend and speed, reuse a cached per-language Kokoro runtime, and revoice a completed project without regenerating video. The next development priority is background music / SFX architecture and editing/timeline improvements.
+**Background music and timeline SFX** are implemented as project-scoped editable audio layers. Users can upload music, control volume/loop/fades, add timed SFX, remove audio layers, and rerender without video generation. Uploads are validated and the master mix is performed by FFmpeg after the existing scene audio pipeline. The next development priority is better scene transitions and timeline editing controls.
 
 ## 11. Important Source Files
 
@@ -262,6 +282,11 @@ Important completed milestones:
 - `backend/app/media.py`
   - ffprobe validation
   - audio/video/caption checks
+
+- `backend/app/audio.py`
+  - project audio upload validation
+  - background music/SFX asset handling
+  - final FFmpeg master audio mix
 
 - `frontend/app/page.tsx`
   - current product UI
@@ -296,14 +321,13 @@ When a GPU becomes available, the first validation should compare identical prom
 
 Current priority order:
 
-1. Background music / SFX architecture
-2. Better editing/transitions and timeline controls
-3. Better project editing workflow
-4. Broader research / stronger factual grounding
-5. Add another video provider such as Wan
-6. Real GPU validation of LTX Fast vs DFR Quality
-7. Quality tuning based on real generated outputs
-8. Social publishing/analytics only after generation quality is proven
+1. Better scene transitions and timeline controls
+2. Better project editing workflow
+3. Broader research / stronger factual grounding
+4. Add another video provider such as Wan
+5. Real GPU validation of LTX Fast vs DFR Quality
+6. Quality tuning based on real generated outputs
+7. Social publishing/analytics only after generation quality is proven
 
 ## 14. Development Rules for Future Agents
 
