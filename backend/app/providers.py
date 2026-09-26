@@ -28,8 +28,8 @@ def dependency(name: str) -> None:
         raise RuntimeError(f"Provider dependency missing: {name}; install requirements-ai.txt on the worker")
 
 
-def ltx_check(_: core.Request) -> None:
-    core.LTX25Video.configured_paths()
+def ltx_check(request: core.Request) -> None:
+    core.LTX25Video.configured_paths(request.generation_mode)
     dependency("ltx_pipelines")
     dependency("ltx_core")
 
