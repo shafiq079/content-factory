@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from .research import Source
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 class Scene(BaseModel):
@@ -33,10 +33,32 @@ class Scene(BaseModel):
     voice: str | None = None
 
 
+class MusicTrack(BaseModel):
+    provider: Literal["uploaded"] = "uploaded"
+    asset: str = Field(min_length=1)
+    enabled: bool = True
+    volume: float = Field(default=0.2, ge=0, le=1)
+    loop: bool = True
+    fade_in: float = Field(default=0.5, ge=0, le=30)
+    fade_out: float = Field(default=3.0, ge=0, le=30)
+
+
+class SFXTrack(BaseModel):
+    id: str = Field(pattern=r"^[a-f0-9]{32}$")
+    provider: Literal["uploaded"] = "uploaded"
+    asset: str = Field(min_length=1)
+    enabled: bool = True
+    start: float = Field(default=0, ge=0, le=3600)
+    duration: float | None = Field(default=None, gt=0, le=3600)
+    volume: float = Field(default=0.7, ge=0, le=1)
+    fade_in: float = Field(default=0, ge=0, le=30)
+    fade_out: float = Field(default=0.3, ge=0, le=30)
+
+
 class Timeline(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    schema_version: Literal[2]
+    schema_version: Literal[3]
     id: str = Field(pattern=r"^[a-f0-9]{32}$")
     request: dict
     status: Literal["queued", "running", "failed", "cancelled", "complete"]
@@ -52,6 +74,8 @@ class Timeline(BaseModel):
     script: str = ""
     story_arc: str = ""
     visual_bible: str = ""
+    music: MusicTrack | None = None
+    sfx: list[SFXTrack] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def distinct_scenes(self):
@@ -95,13 +119,15 @@ def validate_plan(plan: dict, sources: list[Source], duration: int) -> dict:
 
 
 def migrate_timeline(data: dict) -> dict:
-    """Upgrade original unversioned manifests; refuse unknown future formats."""
+    """Upgrade older manifests in place; refuse unknown future formats."""
     version = data.get("schema_version", 1)
+    if version not in (1, 2, SCHEMA_VERSION):
+        raise ValueError(f"Unsupported timeline schema version: {version}")
     if version != SCHEMA_VERSION:
-        if version != 1:
-            raise ValueError(f"Unsupported timeline schema version: {version}")
         data = {**data, "schema_version": SCHEMA_VERSION}
     if "script" not in data:
         data = {**data, "script": " ".join(s.get("narration", "") for s in data.get("scenes", [])),
                 "hook": data.get("scenes", [{}])[0].get("narration", "") if data.get("scenes") else ""}
+    data.setdefault("music", None)
+    data.setdefault("sfx", [])
     return Timeline.model_validate(data).model_dump()
