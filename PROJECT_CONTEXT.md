@@ -168,7 +168,7 @@ Each project stores:
 - intermediate render files
 - optional `.otio` export
 
-The timeline stores prompts, narration, scene duration, start times, source IDs, audio mode, generation mode, status, and asset paths.
+The timeline stores scene order, prompts, narration, scene duration, start times, source IDs, audio mode, generation mode, transition mode/duration, status, and asset paths.
 
 ## 7. Current Scene Generation Flow
 
@@ -218,6 +218,23 @@ Implemented behavior:
 
 The deterministic template planner follows the same contract so all of this can be exercised in CPU-only CI.
 
+### Timeline transitions and scene order
+
+Implemented render-only editing:
+- scenes can be moved earlier/later without regenerating any clip or narration
+- a transition belongs to the **incoming** scene
+- supported transition modes are `cut`, `fade` (through black), and `fade_white`
+- the first scene is always forced to `cut`
+- fade duration is 0.2–2.0 seconds; `cut` always stores duration 0
+- half of a fade is rendered at the end of the outgoing scene and half at the start of the incoming scene
+- the matching scene audio is faded at the same seam
+- transitions do not overlap clips, so total project duration, caption offsets and music/SFX timeline positions remain stable
+- scene reordering rebuilds starts, hook, script and captions, then rerenders saved assets only
+- transition and order edits never invoke the video model or require a GPU
+- transition metadata is exported in OTIO clip metadata
+
+MoneyPrinterTurbo's MIT-licensed video effects were inspected as a practical reference. It applies MoviePy fade/slide/zoom effects to clips. Content Factory keeps its own FFmpeg duration-preserving seam implementation because our narration/caption/music/SFX timeline must remain stable and editable.
+
 ## 9. Research Behavior
 
 Current research is deliberately small:
@@ -249,11 +266,12 @@ Important completed milestones:
 - frontend controls for video quality and audio routing
 - reusable Kokoro voice ID/blend/speed controls and GPU-independent project revoice workflow
 - editable project background music and timeline SFX with render-only FFmpeg mixing
+- render-only scene ordering plus black/white fade transition controls
 - GitHub Actions frontend build + backend CPU tests
 
 ### Most recent completed development work
 
-**Background music and timeline SFX** are implemented as project-scoped editable audio layers. Users can upload music, control volume/loop/fades, add timed SFX, remove audio layers, and rerender without video generation. Uploads are validated and the master mix is performed by FFmpeg after the existing scene audio pipeline. The next development priority is better scene transitions and timeline editing controls.
+**Timeline transitions and scene ordering** are implemented as render-only edits on top of the existing scene/audio pipeline. Users can move saved scenes earlier/later and apply cut, fade-through-black or fade-through-white seams with editable durations. The transition renderer preserves total project timing and fades matching scene audio without video regeneration. The next development priority is a richer project editing workflow and asset replacement.
 
 ## 11. Important Source Files
 
@@ -321,13 +339,12 @@ When a GPU becomes available, the first validation should compare identical prom
 
 Current priority order:
 
-1. Better scene transitions and timeline controls
-2. Better project editing workflow
-3. Broader research / stronger factual grounding
-4. Add another video provider such as Wan
-5. Real GPU validation of LTX Fast vs DFR Quality
-6. Quality tuning based on real generated outputs
-7. Social publishing/analytics only after generation quality is proven
+1. Better project editing workflow and richer asset replacement
+2. Broader research / stronger factual grounding
+3. Add another video provider such as Wan
+4. Real GPU validation of LTX Fast vs DFR Quality
+5. Quality tuning based on real generated outputs
+6. Social publishing/analytics only after generation quality is proven
 
 ## 14. Development Rules for Future Agents
 

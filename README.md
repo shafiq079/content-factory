@@ -46,6 +46,10 @@ Completed projects also support editable **background music and timeline SFX** w
 
 The BGM workflow was informed by the MIT-licensed MoneyPrinterTurbo project's practical handling of safe uploads, zero-volume short-circuiting, looping and fades, but this implementation is adapted to Content Factory's FFmpeg + editable-timeline architecture rather than copying its MoviePy pipeline.
 
+The scene cards now provide render-only timeline controls. You can move a scene earlier/later without regenerating its clip, and choose how a scene enters from the previous scene: **Cut**, **Fade through black**, or **Fade through white**. Fade duration is editable from 0.2–2.0 seconds. The renderer splits the transition across the outgoing and incoming scene while preserving the exact project duration and existing caption/music/SFX timing; audio is faded at the same seam. Timeline edits rebuild captions when order changes and rerender from saved media only — no video model or GPU is used. Transition metadata is also included in OTIO export.
+
+This transition work was informed by MoneyPrinterTurbo's MIT-licensed fade/slide/zoom effect implementation, but Content Factory intentionally uses a duration-preserving FFmpeg seam model that fits its editable narration/caption/audio timeline instead of adopting the MoviePy effect chain.
+
 Click **Regenerate scene** after editing its prompt or audio mode. Each scene can use `narration` (dedicated Kokoro/silent voice track), `native` (LTX synchronized audio only), or `hybrid` (dedicated narration mixed over the LTX native track). Hybrid native audio defaults to 22% volume and can be changed with `HYBRID_NATIVE_VOLUME=0..1`. Narration/hybrid scenes measure the voice first and request video at that length; native scenes use the planned scene duration. The worker then recalculates subsequent start times/captions and rerenders the final video. The original target is saved as `planned_duration`. Choose Classic, Bold or Minimal captions and click **Render again with saved scenes** to change the final MP4 without running any model again. An error in one scene leaves intermediate files available for inspection.
 
 The server stores projects on disk and uses a SQLite job queue in the project directory. A worker claims one job at a time and renews a lease. On restart an expired lease can be claimed again and completed scene assets are reused after ffprobe checks; invalid clips or voices are regenerated. New files are checked before publication, and the final MP4 must contain H.264 video at the requested dimensions and AAC audio with the expected duration. Captions must be ordered and stay within the timeline. Jobs can be cancelled between stages or retried from the last saved scene. A currently running model or FFmpeg process is allowed to finish its step before cancellation takes effect. Use a shared local filesystem for the SQLite database and assets; this implementation is **single-host** and has no authentication or multi-host resource scheduler. Bind to loopback; add access controls and stronger resource management before public deployment. Longer renders at 1080×1920 can be CPU intensive.
@@ -55,7 +59,7 @@ The server stores projects on disk and uses a SQLite job queue in the project di
 - The template planner is a deterministic test fixture. Wikipedia introduction excerpts offer a limited initial research source; they may be incomplete or unsuitable for a topic. Ollama uses these notes but does not independently verify factual claims or validate whether each narration sentence is fully supported.
 - The first real video provider is LTX 2.5 with two generation modes: `fast` uses the official DistilledPipeline and `quality` uses the official DFR production path with the detailing IC-LoRA and one spatial refinement round. Raw LTX scene files keep synchronized native audio. Final assembly supports scene-level `narration`, `native` and `hybrid` routing; hybrid lowers native audio under the dedicated narrator. `native` requires the generated clip to contain an audio stream. Temporal DFR upscaling is intentionally disabled for now, so the separate temporal-upscaler checkpoint is not required.
 - Without `CAPTION_PROVIDER=whisper`, caption timing is estimated from the script and distributed evenly across each scene. Whisper mode transcribes generated voice with word timestamps but does not guarantee perfect forced alignment; review captions before publishing.
-- The UI edits visual prompts, offers three caption styling presets, project background music, and timeline SFX. Transitions beyond cuts, richer asset replacement and Wan are future additions.
+- The UI edits visual prompts, offers three caption styling presets, project background music, timeline SFX, scene reordering, and duration-preserving cut/black-fade/white-fade transitions. Richer asset replacement, more advanced transition families and Wan are future additions.
 - Generated footage has **not** been verified in this workspace because it has no NVIDIA GPU, official checkpoint files or Ollama/Kokoro installations. Only the preview mode was run end to end.
 
 ## Technical choices and licenses (checked 25 September 2026)
@@ -75,8 +79,8 @@ Official references: [LTX-2 inference and model paths](https://github.com/Lightr
 
 GPU validation is intentionally deferred until suitable hardware is available. Current development should continue on CPU-testable product and pipeline work.
 
-1. Add better scene transitions and timeline editing controls.
-2. Improve project editing and then expand research/factual grounding.
+1. Improve the project editing workflow, including richer asset replacement and batch edits.
+2. Expand research/factual grounding.
 3. Add another modular video provider such as Wan.
 4. When a GPU becomes available, validate LTX Fast vs DFR Quality and tune generation based on real outputs.
 

@@ -164,6 +164,49 @@ class JobStore:
         return self._enqueue_audio_edit(project_id, "queued to remove sound effect", edit)
 
 
+    def enqueue_timeline_edit(self, project_id: str, scene_order: list[int] | None,
+                              transitions: list[dict]) -> dict:
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT state FROM jobs WHERE project_id=?", (project_id,)).fetchone()
+            if row and row["state"] in ("queued", "running"):
+                raise RuntimeError("Project already has a running or queued job")
+            manifest = core.load(project_id)
+            if manifest["status"] != "complete":
+                raise RuntimeError("Only completed projects can edit the timeline")
+
+            by_id = {scene["id"]: scene for scene in manifest["scenes"]}
+            if scene_order is not None:
+                if len(scene_order) != len(by_id) or len(set(scene_order)) != len(scene_order) or set(scene_order) != set(by_id):
+                    raise ValueError("Scene order must contain every scene exactly once")
+                manifest["scenes"] = [by_id[scene_id] for scene_id in scene_order]
+
+            for edit in transitions:
+                scene_id = edit["scene_id"]
+                scene = by_id.get(scene_id)
+                if scene is None:
+                    raise ValueError(f"Unknown scene: {scene_id}")
+                transition = edit["transition"]
+                duration = float(edit["transition_duration"])
+                if transition not in core.TRANSITIONS:
+                    raise ValueError("Unknown transition")
+                if transition == "cut":
+                    duration = 0.0
+                elif not 0.2 <= duration <= 2.0:
+                    raise ValueError("Fade transition duration must be between 0.2 and 2 seconds")
+                scene["transition"] = transition
+                scene["transition_duration"] = duration
+
+            core.recalculate_timeline(manifest)
+            manifest.update(status="queued", stage="queued to update timeline", error=None)
+            core.atomic_write(core.project_path(project_id) / "timeline.json", manifest)
+            db.execute("""INSERT INTO jobs(project_id,kind,state,updated_at) VALUES(?,?,?,?)
+                ON CONFLICT(project_id) DO UPDATE SET kind='timeline',scene_id=NULL,state='queued',token=NULL,
+                lease_until=NULL,cancel_requested=0,updated_at=excluded.updated_at""",
+                (project_id, "timeline", "queued", time.time()))
+            return manifest
+
+
     def enqueue_revoice(self, project_id: str, voice_id: str, voice_speed: float) -> dict:
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -276,6 +319,8 @@ def worker_loop(store: JobStore, stop: threading.Event) -> None:
                 core.render_work(project_id, check)
             elif job["kind"] == "revoice":
                 core.revoice_work(project_id, check)
+            elif job["kind"] == "timeline":
+                core.timeline_work(project_id, check)
             else:
                 core.process(project_id, check)
             state = core.load(project_id)["status"]
