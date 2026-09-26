@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useState } from 'react';
-import SceneEditor, {type Scene, type TransitionMode} from './SceneEditor';
+import SceneEditor, {type Scene, type TransitionMode, type AudioMode} from './SceneEditor';
 
 const API = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000';
 type CaptionStyle = 'classic' | 'bold' | 'minimal';
@@ -11,7 +11,7 @@ type Source = {id:number; title:string; url:string; excerpt:string; evidence?:st
 type ResearchBrief = {mode:string; limitations:string[]; conflicts:{source_ids:number[];summary:string}[]};
 type ClaimReviewItem = {scene_id:number; factual:boolean; verdict:'approved'|'revised'|'blocked'; source_ids:number[]; claims:string[]; reason:string; original_narration:string; reviewed_narration:string};
 type ClaimReview = {status:'unreviewed'|'not_required'|'approved'|'approved_after_revision'|'blocked'; reviewer:string; reviewed_at?:string|null; fingerprint:string; attempts:number; items:ClaimReviewItem[]; limitations:string[]};
-type Project = {id:string; status:string; stage:string; error?:string; revision?:number; caption_style?:CaptionStyle; scenes:Scene[]; assets:Record<string,string>; idea?:string; hook?:string; script?:string; story_arc?:string; visual_bible?:string; research?:Source[]; research_brief?:ResearchBrief; claim_review?:ClaimReview; music?:MusicTrack|null; sfx?:SFXTrack[]; request:{video_provider:string; voice_provider:string; planner_provider:string; generation_mode?:GenerationMode; language?:string; voice_id?:string; voice_speed?:number}};
+type Project = {id:string; status:string; stage:string; error?:string; revision?:number; caption_style?:CaptionStyle; pending_job?:{kind:string; execution?:string}; scenes:Scene[]; assets:Record<string,string>; idea?:string; hook?:string; script?:string; story_arc?:string; visual_bible?:string; research?:Source[]; research_brief?:ResearchBrief; claim_review?:ClaimReview; music?:MusicTrack|null; sfx?:SFXTrack[]; request:{video_provider:string; voice_provider:string; planner_provider:string; generation_mode?:GenerationMode; language?:string; voice_id?:string; voice_speed?:number}};
 
 export default function Home() {
   const [topic, setTopic] = useState('Black holes');
@@ -30,6 +30,11 @@ export default function Home() {
   const [project, setProject] = useState<Project | null>(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [selectedScenes, setSelectedScenes] = useState<number[]>([]);
+  const [batchOperation, setBatchOperation] = useState<'set_transition'|'set_audio_mode'>('set_transition');
+  const [batchTransition, setBatchTransition] = useState<TransitionMode>('cut');
+  const [batchDuration, setBatchDuration] = useState(0.8);
+  const [batchAudioMode, setBatchAudioMode] = useState<AudioMode>('narration');
   const [captionStyle, setCaptionStyle] = useState<CaptionStyle | null>(null);
   const [projectVoiceId, setProjectVoiceId] = useState<string | null>(null);
   const [projectVoiceSpeed, setProjectVoiceSpeed] = useState<number | null>(null);
@@ -57,7 +62,7 @@ export default function Home() {
     return () => { cancelled = true; clearInterval(timer); };
   }, [id]);
   async function start() {
-    setBusy(true); setError(''); setProject(null);
+    setBusy(true); setError(''); setProject(null); setSelectedScenes([]);
     try {
       const res = await fetch(`${API}/projects`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({topic,duration,language,style,instructions,video_provider:video,generation_mode:video==='ltx25'?generationMode:'fast',voice_provider:voice,voice_id:voice==='kokoro'?voiceId:'',voice_speed:voice==='kokoro'?voiceSpeed:1,planner_provider:planner,research_provider:research})});
       if (!res.ok) throw new Error(await res.text());
@@ -195,6 +200,19 @@ export default function Home() {
     } catch(e) { setError(String(e)); }
   }
 
+  async function applyBatch() {
+    if (!id || !project || !selectedScenes.length) return;
+    setError('');
+    const payload = batchOperation==='set_transition'
+      ? {operation:batchOperation,scene_ids:selectedScenes,transition:batchTransition,transition_duration:batchTransition==='cut'?0:batchDuration}
+      : {operation:batchOperation,scene_ids:selectedScenes,audio_mode:batchAudioMode};
+    try {
+      const res = await fetch(API+'/projects/'+id+'/scenes/batch', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+      if (!res.ok) throw new Error(await res.text());
+      setProject(await res.json()); setSelectedScenes([]);
+    } catch(e) { setError(String(e)); }
+  }
+
   async function moveScene(sceneId:number, direction:-1|1) {
     if (!id || !project) return;
     const order = project.scenes.map(scene=>scene.id);
@@ -236,7 +254,7 @@ export default function Home() {
       <button disabled={busy || !topic.trim()} onClick={start}>{busy?'Starting…':'Generate project →'}</button>
     </div><div className="panel output"><h2>Output</h2>
       {!project && <div className="empty">Your render and scene files will appear here.</div>}
-      {project && <><div className="status"><strong>{project.status.toUpperCase()}</strong><span>{project.stage}</span></div><div className="id">Project {project.id}</div>
+      {project && <><div className="status"><strong>{project.status.toUpperCase()}</strong><span>{project.stage}{project.pending_job?.kind==='batch' && project.pending_job.execution?` · ${project.pending_job.execution}`:''}</span></div><div className="id">Project {project.id}</div>
         {(project.status==='queued' || project.status==='running') && <button className="secondary" onClick={()=>jobAction('cancel')}>Cancel job</button>}
         {(project.status==='failed' || project.status==='cancelled') && <button className="secondary" onClick={()=>jobAction('retry')}>Retry job</button>}
         {project.error && <p className="error">{project.error}</p>}
@@ -263,8 +281,27 @@ export default function Home() {
             <p className="note">Cited by scenes: {project.scenes.filter(scene=>scene.source_ids?.includes(source.id)).map(scene=>scene.id).join(', ')||'none'}</p>
             {source.domain==='en.wikipedia.org' && <p className="note">Wikipedia text: CC BY-SA 4.0.</p>}
           </div>)}</div>}
+        {!!project.scenes.length && <div className="story"><h3>Batch scene edits</h3>
+          <div className="links"><button className="secondary" onClick={()=>setSelectedScenes(project.scenes.map(scene=>scene.id))}>Select all</button>
+            <button className="secondary" onClick={()=>setSelectedScenes([])}>Clear selection</button>
+            <span>{selectedScenes.filter(sceneId=>project.scenes.some(scene=>scene.id===sceneId)).length} selected</span></div>
+          <div className="row"><label>Action<select value={batchOperation} onChange={e=>setBatchOperation(e.target.value as typeof batchOperation)}>
+            <option value="set_transition">Set transition</option><option value="set_audio_mode">Set audio mode</option>
+          </select></label>
+          {batchOperation==='set_transition' ? <><label>Transition<select value={batchTransition} onChange={e=>setBatchTransition(e.target.value as TransitionMode)}>
+            <option value="cut">Cut</option><option value="fade">Fade through black</option><option value="fade_white">Fade through white</option>
+          </select></label><label>Duration (s)<input type="number" min="0.2" max="2" step="0.1" disabled={batchTransition==='cut'} value={batchDuration} onChange={e=>setBatchDuration(Number(e.target.value))} /></label></>
+            : <label>Audio mode<select value={batchAudioMode} onChange={e=>setBatchAudioMode(e.target.value as AudioMode)}>
+              <option value="narration">Narration</option><option value="native">Native</option><option value="hybrid">Hybrid</option>
+            </select></label>}</div>
+          <p className="note">{batchOperation==='set_audio_mode' && batchAudioMode!=='native' && project.scenes.some(scene=>selectedScenes.includes(scene.id) && !scene.voice)
+            ? 'TTS + render: selected scenes without narration need voice generation.'
+            : 'Render only: use saved clips and audio.'} One job and one final render; no video generation. Fades cannot include the first scene. Native requires audio in every selected clip. The server validates all scenes before queueing.</p>
+          <button className="secondary" disabled={project.status!=='complete'||!selectedScenes.length} onClick={applyBatch}>Apply to {selectedScenes.length} scenes</button>
+        </div>}
         <div className="scenes">{project.scenes.map((scene,index)=><SceneEditor key={`${scene.id}-${project.revision??0}`} scene={scene}
           index={index} count={project.scenes.length} ready={project.status==='complete'}
+          selected={selectedScenes.includes(scene.id)} onSelect={(sceneId,selected)=>setSelectedScenes(current=>selected?[...new Set([...current,sceneId])]:current.filter(id=>id!==sceneId))}
           videoProvider={project.request.video_provider} sources={project.research} asset={asset}
           onJson={sceneAction} onUpload={uploadSceneAsset} onRegenerate={redo}
           onTransition={updateTransition} onMove={moveScene} />)}</div>

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import copy
 import json
 import math
 import os
@@ -1404,6 +1405,132 @@ def validate_active_scene(folder: Path, scene: dict, req: Request) -> None:
             raise media.MediaValidationError(f"Scene {scene['id']} is missing narration audio")
         media.validate_voice(folder / voice_path, scene.get("planned_duration") or scene["duration"],
                              req.voice_provider == "silent" and scene.get("voice_origin") != "uploaded")
+
+
+def validate_scene_batch(folder: Path, manifest: dict, edit: dict) -> list[int]:
+    """Return IDs requiring narration generation; never mutate the manifest."""
+    ids = edit.get("scene_ids", [])
+    if not ids or len(ids) != len(set(ids)):
+        raise ValueError("Select scenes once each; the selection cannot be empty or contain duplicates")
+    by_id = {scene["id"]: scene for scene in manifest["scenes"]}
+    unknown = set(ids) - set(by_id)
+    if unknown:
+        raise ValueError(f"Unknown scene IDs: {', '.join(map(str, sorted(unknown)))}")
+    operation = edit.get("operation")
+    if operation == "set_transition":
+        mode, duration = edit["transition"], edit["transition_duration"]
+        if mode not in TRANSITIONS or (mode == "cut" and duration != 0) or (mode != "cut" and not 0.2 <= duration <= 2):
+            raise ValueError("Cut requires duration 0; fades require a duration between 0.2 and 2 seconds")
+        if mode != "cut" and manifest["scenes"][0]["id"] in ids:
+            raise ValueError("The first scene must use Cut; remove it from the fade selection")
+        return []
+    if operation != "set_audio_mode" or edit.get("audio_mode") not in ("narration", "native", "hybrid"):
+        raise ValueError("Unknown batch operation or audio mode")
+    mode = edit["audio_mode"]
+    req = Request.model_validate(manifest["request"])
+    missing = []
+    for scene_id in ids:
+        scene = by_id[scene_id]
+        if mode == "native":
+            if not scene.get("clip") or not media.has_audio(folder / scene["clip"]):
+                raise ValueError(f"Scene {scene_id} needs an active clip with audio for Native mode")
+        elif scene.get("voice") and (folder / scene["voice"]).is_file():
+            media.validate_voice(folder / scene["voice"], scene.get("planned_duration") or scene["duration"],
+                                 req.voice_provider == "silent" and scene.get("voice_origin") != "uploaded")
+        elif scene.get("voice") and scene.get("voice_origin") == "uploaded":
+            raise ValueError(f"Scene {scene_id} has a missing uploaded narration asset")
+        else:
+            if not scene["narration"].strip():
+                raise ValueError(f"Scene {scene_id} needs narration text before TTS")
+            missing.append(scene_id)
+    return missing
+
+
+def batch_work(project_id: str, is_cancelled: Callable[[], bool] = lambda: False) -> None:
+    """Build a batch on a private manifest; publish it only after one successful render."""
+    from . import providers
+
+    folder = project_path(project_id)
+    manifest = load(project_id)
+    edit = manifest["pending_job"]["edit"]
+    candidate = copy.deepcopy(manifest)
+    req = Request.model_validate(candidate["request"])
+    generated: list[Path] = []
+    originals = {name: (folder / name).read_bytes() if (folder / name).is_file() else None
+                 for name in ("captions.srt", "timeline.otio")}
+
+    def save(stage: str) -> None:
+        manifest.update(status="running", stage=stage, error=None)
+        atomic_write(folder / "timeline.json", manifest)
+
+    try:
+        if is_cancelled():
+            raise JobCancelled("Cancellation requested")
+        missing = validate_scene_batch(folder, manifest, edit)
+        fingerprint = claim_review_fingerprint(candidate)
+        ensure_claim_review(candidate, req, save)
+        if fingerprint != claim_review_fingerprint(candidate):
+            raise ValueError("Claim review changed narration; batch audio edits require a separate review/edit job")
+        by_id = {scene["id"]: scene for scene in candidate["scenes"]}
+        if missing:
+            providers.preflight_voice(req)
+            voice = providers.make("voice", req.voice_provider)
+            for scene_id in missing:
+                if is_cancelled():
+                    raise JobCancelled("Cancellation requested")
+                scene = by_id[scene_id]
+                target = scene.get("planned_duration") or scene["duration"]
+                path = folder / f"voice/scene-{scene_id:02d}-{uuid.uuid4().hex}.wav"
+                path.parent.mkdir(parents=True, exist_ok=True)
+                generated.append(path)
+                save(f"voicing batch scene {scene_id}")
+                voice.generate(scene["narration"], path, target, req.language, req.voice_id, req.voice_speed)
+                measured = media.validate_voice(path, target, req.voice_provider == "silent")
+                scene["original_voice"] = scene.get("original_voice") or scene.get("voice")
+                scene["voice"] = path.relative_to(folder).as_posix()
+                scene["voice_origin"] = "generated"
+                scene["duration"] = round(measured.duration, 3) if req.voice_provider != "silent" else target
+
+        for scene_id in edit["scene_ids"]:
+            scene = by_id[scene_id]
+            if edit["operation"] == "set_transition":
+                scene["transition"] = edit["transition"]
+                scene["transition_duration"] = edit["transition_duration"]
+            else:
+                scene["audio_mode"] = edit["audio_mode"]
+                if scene_id not in missing and edit["audio_mode"] != "native":
+                    measured = media.validate_voice(folder / scene["voice"], scene.get("planned_duration") or scene["duration"],
+                                                   req.voice_provider == "silent" and scene.get("voice_origin") != "uploaded")
+                    scene["duration"] = round(measured.duration, 3)
+        recalculate_timeline(candidate)
+        for scene in candidate["scenes"]:
+            validate_active_scene(folder, scene, req)
+        if is_cancelled():
+            raise JobCancelled("Cancellation requested")
+        save("rebuilding batch captions")
+        captions(candidate["scenes"], folder, providers.caption_choice(req) == "whisper")
+        if is_cancelled():
+            raise JobCancelled("Cancellation requested")
+        save("rendering batch timeline")
+        export_otio(folder, candidate)
+        render(folder, candidate)
+        candidate["revision"] = manifest.get("revision", 0) + 1
+        candidate.update(status="complete", stage="complete", error=None)
+        candidate.pop("pending_job", None)
+        atomic_write(folder / "timeline.json", candidate)
+    except Exception as exc:
+        for path in generated:
+            path.unlink(missing_ok=True)
+        for name, contents in originals.items():
+            if contents is None:
+                (folder / name).unlink(missing_ok=True)
+            else:
+                (folder / name).write_bytes(contents)
+        if isinstance(exc, JobCancelled):
+            manifest.update(status="cancelled", stage="cancelled", error=None)
+        else:
+            manifest.update(status="failed", stage="failed", error=f"{type(exc).__name__}: {exc}")
+        atomic_write(folder / "timeline.json", manifest)
 
 
 def timeline_work(project_id: str, is_cancelled: Callable[[], bool] = lambda: False) -> None:

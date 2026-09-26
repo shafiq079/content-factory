@@ -1,12 +1,12 @@
 from contextlib import asynccontextmanager
 import threading
 import uuid
-from typing import Literal
+from typing import Annotated, Literal
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from . import audio, contracts, core, media, providers, scene_assets
 from .core import Request, create, load, project_path
@@ -88,6 +88,24 @@ class TransitionEdit(BaseModel):
 class TimelineEdit(BaseModel):
     scene_order: list[int] | None = None
     transitions: list[TransitionEdit] = Field(default_factory=list)
+
+
+class TransitionBatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    operation: Literal["set_transition"]
+    scene_ids: list[Annotated[int, Field(ge=1)]] = Field(min_length=1)
+    transition: Literal["cut", "fade", "fade_white"]
+    transition_duration: float = Field(ge=0, le=2)
+
+
+class AudioBatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    operation: Literal["set_audio_mode"]
+    scene_ids: list[Annotated[int, Field(ge=1)]] = Field(min_length=1)
+    audio_mode: Literal["narration", "native", "hybrid"]
+
+
+SceneBatch = Annotated[TransitionBatch | AudioBatch, Field(discriminator="operation")]
 
 
 class MusicEdit(BaseModel):
@@ -231,6 +249,18 @@ def edit_project_timeline(project_id: str, edit: TimelineEdit):
             edit.scene_order,
             [item.model_dump() for item in edit.transitions],
         )
+    except FileNotFoundError:
+        raise HTTPException(404, "Project not found")
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@app.post("/projects/{project_id}/scenes/batch", status_code=202)
+def edit_scene_batch(project_id: str, edit: SceneBatch):
+    try:
+        return app.state.jobs.enqueue_batch(project_id, edit.model_dump())
     except FileNotFoundError:
         raise HTTPException(404, "Project not found")
     except ValueError as exc:

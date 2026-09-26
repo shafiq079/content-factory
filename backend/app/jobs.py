@@ -47,7 +47,7 @@ class JobStore:
                 if manifest.get("status") in ("queued", "running"):
                     pending = manifest.get("pending_job") or {}
                     kind = pending.get("kind", "generate")
-                    if kind not in {"generate", "regenerate", "render", "timeline", "revoice", "narration"}:
+                    if kind not in {"generate", "regenerate", "render", "timeline", "revoice", "narration", "batch"}:
                         continue
                     db.execute("""INSERT INTO jobs(project_id,kind,scene_id,state,updated_at) VALUES(?,?,?,?,?)
                         ON CONFLICT(project_id) DO UPDATE SET kind=excluded.kind,scene_id=excluded.scene_id,
@@ -295,6 +295,29 @@ class JobStore:
             return manifest
 
 
+    def enqueue_batch(self, project_id: str, edit: dict) -> dict:
+        """Validate the entire selection under one project lock; persist one recoverable job."""
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT state FROM jobs WHERE project_id=?", (project_id,)).fetchone()
+            if row and row["state"] in ("queued", "running"):
+                raise RuntimeError("Project already has a running or queued job")
+            manifest = core.load(project_id)
+            if manifest["status"] != "complete":
+                raise RuntimeError("Only completed projects can edit scenes")
+            # The same validator is used at execution time after a worker restart.
+            needs_tts = core.validate_scene_batch(core.project_path(project_id), manifest, edit)
+            execution = "TTS + render" if needs_tts else "Render only"
+            manifest["pending_job"] = {"kind": "batch", "edit": edit, "execution": execution}
+            manifest.update(status="queued", stage="queued to batch edit scenes", error=None)
+            core.atomic_write(core.project_path(project_id) / "timeline.json", manifest)
+            db.execute("""INSERT INTO jobs(project_id,kind,state,updated_at) VALUES(?,?,?,?)
+                ON CONFLICT(project_id) DO UPDATE SET kind='batch',scene_id=NULL,state='queued',token=NULL,
+                lease_until=NULL,cancel_requested=0,updated_at=excluded.updated_at""",
+                (project_id, "batch", "queued", time.time()))
+            return manifest
+
+
     def enqueue_revoice(self, project_id: str, voice_id: str, voice_speed: float) -> dict:
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -412,6 +435,8 @@ def worker_loop(store: JobStore, stop: threading.Event) -> None:
                 core.revoice_work(project_id, check)
             elif job["kind"] == "timeline":
                 core.timeline_work(project_id, check)
+            elif job["kind"] == "batch":
+                core.batch_work(project_id, check)
             else:
                 core.process(project_id, check)
             state = core.load(project_id)["status"]
