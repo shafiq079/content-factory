@@ -69,12 +69,11 @@ Official references: [LTX-2 inference and model paths](https://github.com/Lightr
 
 GPU validation is intentionally deferred until suitable hardware is available. Current development should continue on CPU-testable product and pipeline work.
 
-1. Complete and harden AI Director v2: variable pacing, narrative beats, speakable narration and visual continuity.
-2. Add reusable voice controls and voice configuration.
-3. Add background music / SFX adapters and better editing/timeline controls.
-4. Improve project editing and then expand research/factual grounding.
-5. Add another modular video provider such as Wan.
-6. When a GPU becomes available, validate LTX Fast vs DFR Quality and tune generation based on real outputs.
+1. Add reusable voice controls and voice configuration.
+2. Add background music / SFX adapters and better editing/timeline controls.
+3. Improve project editing and then expand research/factual grounding.
+4. Add another modular video provider such as Wan.
+5. When a GPU becomes available, validate LTX Fast vs DFR Quality and tune generation based on real outputs.
 
 ## GitHub development
 
