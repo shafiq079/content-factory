@@ -38,9 +38,13 @@ With Ollama selected, the pipeline first retrieves up to three Wikipedia introdu
 
 ## Editable output and behavior
 
-Each project lives in `content-factory/projects/<uuid>/`: `timeline.json` (the canonical timeline), `clips/`, `voice/`, `captions.srt`, `final.mp4`, and intermediate `work/` files. If `opentimelineio` is installed, `timeline.otio` is also written. Timeline JSON contains request settings, research excerpts and URLs, idea, story arc, visual bible, hook, full script, scene beats, continuity notes, prompts, narration, source IDs, duration, start times, asset paths, state and error. Schema version 2 is validated when loaded; original unversioned manifests are upgraded in place and unknown future versions are rejected. The OTIO file is an interchange export, not the source of truth. Editor compatibility depends on the editor and available adapters.
+Each project lives in `content-factory/projects/<uuid>/`: `timeline.json` (the canonical timeline), `clips/`, `voice/`, optional project-scoped `audio/music/` and `audio/sfx/` assets, `captions.srt`, `final.mp4`, and intermediate `work/` files. If `opentimelineio` is installed, `timeline.otio` is also written. Timeline JSON contains request settings, research excerpts and URLs, idea, story arc, visual bible, hook, full script, scene beats, continuity notes, prompts, narration, source IDs, duration, start times, asset paths, state and error. Schema version 2 is validated when loaded; original unversioned manifests are upgraded in place and unknown future versions are rejected. The OTIO file is an interchange export, not the source of truth. Editor compatibility depends on the editor and available adapters.
 
 Project-level **Narration voice** controls let you change the Kokoro voice ID or speech speed after a project is complete. Applying them regenerates only narration/captions and rerenders from the existing scene clips; it does **not** call the video model, so this workflow does not require the LTX GPU stack. Kokoro pipelines are cached per language and reused across scenes/jobs instead of reloading the TTS model for every scene.
+
+Completed projects also support editable **background music and timeline SFX** without any GPU work. Uploads are stored inside the project, limited to common audio formats and 30 MB, and probed as decodable audio before being published. Background music has volume, loop, fade-in and fade-out controls. SFX are separate timeline events with a start time, duration, volume and fades. FFmpeg mixes these overlays only after the scene narration/native/hybrid audio has already been assembled, so the original scene clips and voice assets remain unchanged. A zero-volume music track is short-circuited before the file is loaded. Music/SFX edits enqueue a render-only job and are saved in `timeline.json`; OTIO export carries the same audio metadata.
+
+The BGM workflow was informed by the MIT-licensed MoneyPrinterTurbo project's practical handling of safe uploads, zero-volume short-circuiting, looping and fades, but this implementation is adapted to Content Factory's FFmpeg + editable-timeline architecture rather than copying its MoviePy pipeline.
 
 Click **Regenerate scene** after editing its prompt or audio mode. Each scene can use `narration` (dedicated Kokoro/silent voice track), `native` (LTX synchronized audio only), or `hybrid` (dedicated narration mixed over the LTX native track). Hybrid native audio defaults to 22% volume and can be changed with `HYBRID_NATIVE_VOLUME=0..1`. Narration/hybrid scenes measure the voice first and request video at that length; native scenes use the planned scene duration. The worker then recalculates subsequent start times/captions and rerenders the final video. The original target is saved as `planned_duration`. Choose Classic, Bold or Minimal captions and click **Render again with saved scenes** to change the final MP4 without running any model again. An error in one scene leaves intermediate files available for inspection.
 
@@ -51,7 +55,7 @@ The server stores projects on disk and uses a SQLite job queue in the project di
 - The template planner is a deterministic test fixture. Wikipedia introduction excerpts offer a limited initial research source; they may be incomplete or unsuitable for a topic. Ollama uses these notes but does not independently verify factual claims or validate whether each narration sentence is fully supported.
 - The first real video provider is LTX 2.5 with two generation modes: `fast` uses the official DistilledPipeline and `quality` uses the official DFR production path with the detailing IC-LoRA and one spatial refinement round. Raw LTX scene files keep synchronized native audio. Final assembly supports scene-level `narration`, `native` and `hybrid` routing; hybrid lowers native audio under the dedicated narrator. `native` requires the generated clip to contain an audio stream. Temporal DFR upscaling is intentionally disabled for now, so the separate temporal-upscaler checkpoint is not required.
 - Without `CAPTION_PROVIDER=whisper`, caption timing is estimated from the script and distributed evenly across each scene. Whisper mode transcribes generated voice with word timestamps but does not guarantee perfect forced alignment; review captions before publishing.
-- The UI edits visual prompts and offers three caption styling presets. Music, sound effects, transitions beyond cuts, asset replacement and Wan are future additions.
+- The UI edits visual prompts, offers three caption styling presets, project background music, and timeline SFX. Transitions beyond cuts, richer asset replacement and Wan are future additions.
 - Generated footage has **not** been verified in this workspace because it has no NVIDIA GPU, official checkpoint files or Ollama/Kokoro installations. Only the preview mode was run end to end.
 
 ## Technical choices and licenses (checked 25 September 2026)
@@ -71,7 +75,7 @@ Official references: [LTX-2 inference and model paths](https://github.com/Lightr
 
 GPU validation is intentionally deferred until suitable hardware is available. Current development should continue on CPU-testable product and pipeline work.
 
-1. Add background music / SFX adapters and better editing/timeline controls.
+1. Add better scene transitions and timeline editing controls.
 2. Improve project editing and then expand research/factual grounding.
 3. Add another modular video provider such as Wan.
 4. When a GPU becomes available, validate LTX Fast vs DFR Quality and tune generation based on real outputs.

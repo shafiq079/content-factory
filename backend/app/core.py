@@ -15,7 +15,7 @@ from typing import Callable
 
 from pydantic import BaseModel, Field, field_validator
 
-from . import contracts, media
+from . import audio, contracts, media
 from .research import Source
 
 
@@ -664,24 +664,30 @@ def render(project_dir: Path, manifest: dict) -> None:
     list_file.write_text("".join(f"file '{p.name}'\n" for p in normalized))
     raw = project_dir / "work" / "joined.mp4"
     run("ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(list_file), "-c", "copy", str(raw))
+    duration = sum(s["duration"] for s in manifest["scenes"])
+    master = project_dir / "work" / "master-audio.mp4"
+    mixed = audio.mix_master_audio(raw, master, project_dir, manifest, duration)
+    subtitle_input = master if mixed else raw
     # Make SRT subtitle path safe in ffmpeg's filtergraph by running in project cwd.
     style = CAPTION_STYLES[manifest.get("caption_style", "classic")]
-    subprocess.run(["ffmpeg", "-y", "-i", str(raw), "-vf", f"subtitles=captions.srt:force_style='{style}'",
+    subprocess.run(["ffmpeg", "-y", "-i", str(subtitle_input), "-vf", f"subtitles=captions.srt:force_style='{style}'",
                     "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-c:a", "copy", "-movflags", "+faststart", "final.partial.mp4"],
                    check=True, cwd=project_dir, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=3600)
     media.validate_final(project_dir / "final.partial.mp4", req.width, req.height, sum(s["duration"] for s in manifest["scenes"]))
     (project_dir / "final.partial.mp4").replace(project_dir / "final.mp4")
 
 
-def export_otio(project_dir: Path, scenes: list[dict]) -> None:
+def export_otio(project_dir: Path, manifest: dict) -> None:
     try:
         import opentimelineio as otio
     except ImportError:
         return
     timeline = otio.schema.Timeline(name="Content Factory")
+    timeline.metadata["music"] = manifest.get("music")
+    timeline.metadata["sfx"] = manifest.get("sfx", [])
     track = otio.schema.Track(kind=otio.schema.TrackKind.Video)
     timeline.tracks.append(track)
-    for s in scenes:
+    for s in manifest["scenes"]:
         rate = 24
         media = otio.schema.ExternalReference(target_url=(project_dir / s["clip"]).as_uri())
         span = otio.opentime.TimeRange(otio.opentime.RationalTime(0,rate), otio.opentime.RationalTime(round(s["duration"]*rate),rate))
@@ -719,7 +725,8 @@ def create(request: Request) -> dict:
     folder = ROOT / project_id
     folder.mkdir()
     manifest = {"schema_version": contracts.SCHEMA_VERSION, "id": project_id, "request": request.model_dump(), "status": "queued", "stage": "queued", "scenes": [], "assets": {}, "error": None, "revision": 0,
-                "research": [], "idea": "", "hook": "", "script": "", "story_arc": "", "visual_bible": "", "caption_style": "classic"}
+                "research": [], "idea": "", "hook": "", "script": "", "story_arc": "", "visual_bible": "",
+                "caption_style": "classic", "music": None, "sfx": []}
     atomic_write(folder / "timeline.json", manifest)
     return manifest
 
@@ -844,7 +851,7 @@ def process(project_id: str, is_cancelled: Callable[[], bool] = lambda: False) -
         check()
         save("rendering")
         render(folder, manifest)
-        export_otio(folder, scenes)
+        export_otio(folder, manifest)
         manifest["assets"] = {"final": "final.mp4", "captions": "captions.srt", "timeline": "timeline.json"}
         manifest["status"] = "complete"
         save("complete")
@@ -890,7 +897,7 @@ def regenerate_work(project_id: str, scene_id: int, is_cancelled: Callable[[], b
         check()
         save("rendering")
         render(folder, manifest)
-        export_otio(folder, manifest["scenes"])
+        export_otio(folder, manifest)
         manifest["revision"] = manifest.get("revision", 0) + 1
         manifest.update(status="complete", stage="complete", error=None)
     except JobCancelled:
@@ -968,7 +975,7 @@ def revoice_work(project_id: str, is_cancelled: Callable[[], bool] = lambda: Fal
             raise JobCancelled("Cancellation requested")
         save("rendering with new narration")
         render(folder, manifest)
-        export_otio(folder, manifest["scenes"])
+        export_otio(folder, manifest)
         manifest["revision"] = manifest.get("revision", 0) + 1
         manifest.update(status="complete", stage="complete", error=None)
     except JobCancelled:
@@ -1016,6 +1023,7 @@ def render_work(project_id: str, is_cancelled: Callable[[], bool] = lambda: Fals
             raise JobCancelled("Cancellation requested")
         save("rendering existing scenes")
         render(folder, manifest)
+        export_otio(folder, manifest)
         manifest["revision"] += 1
         manifest.update(status="complete", error=None)
         save("complete")
