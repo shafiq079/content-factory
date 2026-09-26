@@ -170,26 +170,23 @@ After all scenes:
 
 The first implementation split the requested video into roughly equal ~7-second scenes. This was acceptable for a pipeline prototype but is not the desired final director behavior.
 
-### AI Director v2 — current development target
+### AI Director v2
 
-The planner should produce an intentional narrative rather than equal-duration chunks.
+Implemented behavior:
+- creates a narrative angle, story arc and project-level visual bible
+- chooses a practical scene count based on total duration
+- uses variable 3–8 second scenes instead of forcing equal ~7-second chunks
+- normalizes scene durations to the exact requested total while preserving relative pacing
+- assigns narrative beats: hook, setup, build, reveal, payoff, CTA or ending
+- forces the first scene to be the hook
+- requires the last scene to be an ending or natural CTA
+- constrains narration length to a practical speaking rate
+- stores camera direction, continuity guidance and source IDs
+- chooses narration / native / hybrid audio modes when the selected video provider supports native audio
+- appends continuity and the visual bible to actual visual prompts so future generated shots receive that context
+- keeps transitions at `cut` for now because the renderer does not yet implement richer transitions
 
-It should decide:
-- narrative angle / story arc
-- hook
-- natural scene durations, usually 3–8 seconds
-- scene role/beat such as hook, setup, build, reveal, payoff, CTA/ending
-- concise narration that can actually be spoken in the allotted duration
-- concrete visual prompt
-- camera / shot direction
-- transition
-- continuity guidance from one scene to the next
-- audio mode: narration / native / hybrid
-- source IDs for factual claims
-
-The first scene must be the hook. The final scene must provide a conclusion, payoff, ending, or CTA as appropriate.
-
-Narration should be constrained to a practical speaking rate so a scene does not contain more words than can naturally fit.
+The deterministic template planner follows the same contract so all of this can be exercised in CPU-only CI.
 
 ## 9. Research Behavior
 
@@ -222,19 +219,9 @@ Important completed milestones:
 - frontend controls for video quality and audio routing
 - GitHub Actions frontend build + backend CPU tests
 
-### Current development branch
+### Most recent development work
 
-`feat/ai-director-v2`
-
-The current active task is **AI Director v2**.
-
-At the time this handoff file was introduced, the branch had already started adding:
-- scene narrative beats
-- continuity metadata
-- story arc metadata
-- planner timing/narration validation
-
-Finish and validate this work before moving to the next milestone.
+**AI Director v2** is the current milestone being completed. Its implementation includes narrative beats, story arc, visual bible, variable scene timing, speakable narration checks and continuity metadata. Once its CI is green and it is merged, the next development priority is reusable voice controls.
 
 ## 11. Important Source Files
 
@@ -297,7 +284,7 @@ When a GPU becomes available, the first validation should compare identical prom
 
 Current priority order:
 
-1. Finish **AI Director v2**
+1. Finish CI/merge for **AI Director v2**
 2. Voice controls and reusable voice configuration
 3. Background music / SFX architecture
 4. Better editing/transitions and timeline controls
