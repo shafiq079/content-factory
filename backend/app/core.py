@@ -108,6 +108,7 @@ SCENE_MIN_SECONDS = 3.0
 SCENE_MAX_SECONDS = 8.0
 SCENE_TARGET_SECONDS = 6.0
 DIRECTOR_BEATS = {"hook", "setup", "build", "reveal", "payoff", "cta", "ending"}
+TRANSITIONS = {"cut", "fade", "fade_white"}
 
 
 def scene_count_for_duration(duration: int) -> int:
@@ -216,6 +217,7 @@ class TemplatePlanner(TextGenerator):
                 ),
                 "camera": angles[i % len(angles)],
                 "transition": "cut",
+                "transition_duration": 0.0,
                 "beat": beat,
                 "continuity": continuity,
                 "audio_mode": "narration",
@@ -249,14 +251,17 @@ class OllamaPlanner(TextGenerator):
             f"Choose between {min_count} and {max_count} scenes; around {target_count} is usually appropriate, but do not make scenes equal just to hit a count. "
             f"Every scene duration must be between {SCENE_MIN_SECONDS:.0f} and {SCENE_MAX_SECONDS:.0f} seconds and all durations must add to exactly {request.duration} seconds. "
             "Use pacing intentionally: hooks and reveals can be shorter; explanation or payoff shots can be longer. "
-            "Each scene object must contain duration, narration, visual_prompt, camera, transition, beat, continuity, audio_mode and source_ids. "
+            "Each scene object must contain duration, narration, visual_prompt, camera, transition, transition_duration, beat, continuity, audio_mode and source_ids. "
             "Allowed beat values: hook, setup, build, reveal, payoff, cta, ending. The first scene must be hook. "
             "The final scene must be cta or ending depending on whether a call-to-action is natural; never force a marketing CTA onto an informational video. "
             "Narration must be concise and naturally speakable at roughly 2 words per second; never exceed about 2.4 words per second. "
             "visual_bible should define stable subject identity, environment, lighting, palette and visual language for the whole video. "
             "Each visual_prompt must describe one concrete generatable shot that directly matches that scene's narration. "
             "continuity must state what should stay visually consistent from the previous scene, such as subject appearance, location, lighting or direction of movement. "
-            "Use transition='cut' for now because the current renderer only guarantees cuts. "
+            "transition describes how this scene enters from the previous scene. The first scene must use cut. "
+            "Allowed transitions are cut, fade, and fade_white. Use transitions sparingly; cuts should remain the default. "
+            "For cut use transition_duration=0. For fade/fade_white use roughly 0.4 to 1.2 seconds, never above 2 seconds. "
+
             "audio_mode must be narration, native or hybrid. Use narration for normal faceless/explainer voiceover. "
             "Use hybrid when consistent narration should sit over synchronized ambience/effects. "
             "Use native only when on-screen synchronized dialogue or native scene sound should carry the scene. "
@@ -319,13 +324,26 @@ class OllamaPlanner(TextGenerator):
             elif audio_mode == "hybrid":
                 visual_prompt += " Generate synchronized environmental ambience and sound effects; do not add a narrator voice."
 
+            transition = str(scene.get("transition") or "cut").lower().strip()
+            if transition not in TRANSITIONS or i == 0:
+                transition = "cut"
+            try:
+                transition_duration = float(scene.get("transition_duration", 0.8 if transition != "cut" else 0.0))
+            except (TypeError, ValueError):
+                transition_duration = 0.8 if transition != "cut" else 0.0
+            if transition == "cut":
+                transition_duration = 0.0
+            else:
+                transition_duration = min(2.0, max(0.2, transition_duration))
+
             clean.append({
                 "id": i + 1,
                 "duration": duration,
                 "narration": scene["narration"].strip(),
                 "visual_prompt": visual_prompt,
                 "camera": str(scene.get("camera") or "static").strip(),
-                "transition": "cut",
+                "transition": transition,
+                "transition_duration": transition_duration,
                 "beat": beat,
                 "continuity": continuity,
                 "audio_mode": audio_mode,
@@ -616,6 +634,75 @@ def captions(scenes: list[dict], project_dir: Path, whisper: bool) -> None:
     media.validate_captions(project_dir / "captions.srt", sum(s["duration"] for s in scenes))
 
 
+def recalculate_timeline(manifest: dict) -> None:
+    """Rebuild non-destructive timeline positions after duration/order edits."""
+    start = 0.0
+    for index, scene in enumerate(manifest["scenes"]):
+        scene["start"] = round(start, 3)
+        if index == 0:
+            scene["transition"] = "cut"
+            scene["transition_duration"] = 0.0
+        elif scene.get("transition", "cut") == "cut":
+            scene["transition_duration"] = 0.0
+        start += scene["duration"]
+    manifest["duration_actual"] = round(start, 3)
+    manifest["script"] = " ".join(scene["narration"] for scene in manifest["scenes"])
+    manifest["hook"] = manifest["scenes"][0]["narration"] if manifest["scenes"] else ""
+
+
+def _transition_color(name: str) -> str:
+    return "white" if name == "fade_white" else "black"
+
+
+def apply_scene_transitions(project_dir: Path, normalized: list[Path], scenes: list[dict]) -> list[Path]:
+    """Render robust in/out seam transitions without changing timeline duration.
+
+    A transition belongs to the incoming scene. Half of its duration fades the
+    previous scene out and half fades the incoming scene in, meeting on the same
+    black/white seam. This preserves narration/caption/music timing exactly.
+    """
+    result: list[Path] = []
+    for index, (source, scene) in enumerate(zip(normalized, scenes, strict=True)):
+        incoming = scene.get("transition", "cut") if index > 0 else "cut"
+        outgoing = scenes[index + 1].get("transition", "cut") if index + 1 < len(scenes) else "cut"
+        video_filters: list[str] = []
+        audio_filters: list[str] = []
+
+        if incoming != "cut":
+            half = min(float(scene.get("transition_duration", 0.0)) / 2.0, scene["duration"])
+            if half > 0:
+                color = _transition_color(incoming)
+                video_filters.append(f"fade=t=in:st=0:d={half:.3f}:color={color}")
+                audio_filters.append(f"afade=t=in:st=0:d={half:.3f}")
+
+        if outgoing != "cut":
+            next_scene = scenes[index + 1]
+            half = min(float(next_scene.get("transition_duration", 0.0)) / 2.0, scene["duration"])
+            if half > 0:
+                start = max(0.0, scene["duration"] - half)
+                color = _transition_color(outgoing)
+                video_filters.append(f"fade=t=out:st={start:.3f}:d={half:.3f}:color={color}")
+                audio_filters.append(f"afade=t=out:st={start:.3f}:d={half:.3f}")
+
+        if not video_filters and not audio_filters:
+            result.append(source)
+            continue
+
+        target = project_dir / "work" / f"scene-{scene['id']:02d}-transition.mp4"
+        run(
+            "ffmpeg", "-y", "-i", str(source),
+            "-vf", ",".join(video_filters) if video_filters else "null",
+            "-af", ",".join(audio_filters) if audio_filters else "anull",
+            "-map", "0:v:0", "-map", "0:a:0",
+            "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-ar", "48000", "-ac", "2",
+            "-t", str(scene["duration"]), str(target),
+        )
+        result.append(target)
+    return result
+
+
+
 def render(project_dir: Path, manifest: dict) -> None:
     req = Request.model_validate(manifest["request"])
     normalized = []
@@ -660,8 +747,9 @@ def render(project_dir: Path, manifest: dict) -> None:
                     "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
                     "-c:a", "aac", "-ar", "48000", "-ac", "2", str(target))
         normalized.append(target)
+    assembled = apply_scene_transitions(project_dir, normalized, manifest["scenes"])
     list_file = project_dir / "work" / "concat.txt"
-    list_file.write_text("".join(f"file '{p.name}'\n" for p in normalized))
+    list_file.write_text("".join(f"file '{p.name}'\n" for p in assembled))
     raw = project_dir / "work" / "joined.mp4"
     run("ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(list_file), "-c", "copy", str(raw))
     duration = sum(s["duration"] for s in manifest["scenes"])
@@ -696,6 +784,8 @@ def export_otio(project_dir: Path, manifest: dict) -> None:
                                                 "beat": s.get("beat", "build"),
                                                 "continuity": s.get("continuity", ""),
                                                 "audio_mode": s.get("audio_mode", "narration"),
+                                                "transition": s.get("transition", "cut"),
+                                                "transition_duration": s.get("transition_duration", 0.0),
                                                 "generation_mode": s.get("generation_mode", "fast")}))
     otio.adapters.write_to_file(timeline, str(project_dir / "timeline.otio"))
 
@@ -835,16 +925,13 @@ def process(project_id: str, is_cancelled: Callable[[], bool] = lambda: False) -
         voice = providers.make("voice", req.voice_provider)
         (folder / "clips").mkdir(exist_ok=True)
         (folder / "voice").mkdir(exist_ok=True)
-        start = 0.0
         for scene in scenes:
             check()
-            scene["start"] = round(start, 3)
             scene["clip"] = f"clips/scene-{scene['id']:02d}.mp4"
             scene["voice"] = None if scene.get("audio_mode", "narration") == "native" else f"voice/scene-{scene['id']:02d}.wav"
             ensure_scene_media(folder, manifest, scene, req, video, voice, check, save)
-            start += scene["duration"]
             atomic_write(folder / "timeline.json", manifest)
-        manifest["duration_actual"] = round(start,3)
+        recalculate_timeline(manifest)
         check()
         save("captions")
         captions(scenes, folder, providers.caption_choice(req) == "whisper")
@@ -887,11 +974,7 @@ def regenerate_work(project_id: str, scene_id: int, is_cancelled: Callable[[], b
         ensure_scene_media(folder, manifest, scene, req, video, voice, check, save)
         atomic_write(folder / "timeline.json", manifest)
         check()
-        start = 0.0
-        for s in manifest["scenes"]:
-            s["start"] = round(start, 3)
-            start += s["duration"]
-        manifest["duration_actual"] = round(start,3)
+        recalculate_timeline(manifest)
         save("captions")
         captions(manifest["scenes"], folder, providers.caption_choice(req) == "whisper")
         check()
@@ -963,11 +1046,7 @@ def revoice_work(project_id: str, is_cancelled: Callable[[], bool] = lambda: Fal
             temp_files.remove(partial)
             scene["duration"] = measured_by_scene[scene["id"]]
 
-        start = 0.0
-        for scene in manifest["scenes"]:
-            scene["start"] = round(start, 3)
-            start += scene["duration"]
-        manifest["duration_actual"] = round(start, 3)
+        recalculate_timeline(manifest)
 
         save("captions")
         captions(manifest["scenes"], folder, providers.caption_choice(req) == "whisper")
@@ -987,6 +1066,53 @@ def revoice_work(project_id: str, is_cancelled: Callable[[], bool] = lambda: Fal
             path.unlink(missing_ok=True)
         atomic_write(folder / "timeline.json", manifest)
 
+
+
+def timeline_work(project_id: str, is_cancelled: Callable[[], bool] = lambda: False) -> None:
+    """Rebuild captions and final media after timeline-only edits; never call a model."""
+    from . import providers
+
+    folder = project_path(project_id)
+    manifest = load(project_id)
+    req = Request.model_validate(manifest["request"])
+
+    def save(stage: str) -> None:
+        manifest["stage"] = stage
+        atomic_write(folder / "timeline.json", manifest)
+
+    try:
+        if is_cancelled():
+            raise JobCancelled("Cancellation requested")
+        manifest.update(status="running", error=None)
+        save("checking timeline assets")
+        for scene in manifest["scenes"]:
+            clip = folder / scene["clip"]
+            media.validate_clip(clip, scene["duration"])
+            if scene.get("audio_mode", "narration") == "native":
+                if not media.has_audio(clip):
+                    raise media.MediaValidationError(f"Native audio requested but scene {scene['id']} clip has no audio")
+            else:
+                voice_path = scene.get("voice")
+                if not voice_path:
+                    raise media.MediaValidationError(f"Scene {scene['id']} is missing narration audio")
+                media.validate_voice(folder / voice_path, scene.get("planned_duration") or scene["duration"],
+                                     req.voice_provider == "silent")
+        recalculate_timeline(manifest)
+        save("rebuilding captions for timeline")
+        captions(manifest["scenes"], folder, providers.caption_choice(req) == "whisper")
+        if is_cancelled():
+            raise JobCancelled("Cancellation requested")
+        save("rendering edited timeline")
+        render(folder, manifest)
+        export_otio(folder, manifest)
+        manifest["revision"] = manifest.get("revision", 0) + 1
+        manifest.update(status="complete", stage="complete", error=None)
+    except JobCancelled:
+        manifest.update(status="cancelled", stage="cancelled", error=None)
+    except Exception as exc:
+        manifest.update(status="failed", stage="failed", error=f"{type(exc).__name__}: {exc}")
+    finally:
+        atomic_write(folder / "timeline.json", manifest)
 
 
 def render_work(project_id: str, is_cancelled: Callable[[], bool] = lambda: False) -> None:
