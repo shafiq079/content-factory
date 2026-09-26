@@ -4,7 +4,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from app import core
+from app import contracts, core
 from app.jobs import JobStore
 from app.main import app
 
@@ -27,7 +27,7 @@ def test_preview_and_regenerate(monkeypatch, tmp_path: Path):
         project_id = response.json()["id"]
         result = wait_for_completion(client, project_id)
         assert result["status"] == "complete", result["error"]
-        assert result["schema_version"] == 2
+        assert result["schema_version"] == contracts.SCHEMA_VERSION
         assert result["idea"].startswith("Preview placeholder")
         assert result["hook"] == result["scenes"][0]["narration"]
         assert result["script"] == " ".join(scene["narration"] for scene in result["scenes"])
