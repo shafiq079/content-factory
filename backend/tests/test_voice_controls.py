@@ -52,6 +52,13 @@ def test_project_revoice_reuses_existing_video_and_persists_voice(monkeypatch, t
         assert result["request"]["voice_speed"] == 1.0
         assert result["duration_actual"] == 4
 
+        def unavailable_video(_request):
+            raise RuntimeError("GPU video stack should not be checked by revoice")
+
+        monkeypatch.setitem(
+            providers.REGISTRY["video"], "preview",
+            providers.Adapter(LoggedVideo, unavailable_video),
+        )
         changed = client.post(f"/projects/{project_id}/voice", json={
             "voice_id": "af_bella",
             "voice_speed": 0.8,
