@@ -1,5 +1,7 @@
 # Content Factory — Phase 1 prototype
 
+For a full architecture handoff and current development context, read [`PROJECT_CONTEXT.md`](PROJECT_CONTEXT.md) first.
+
 Local web app for turning a topic into an editable short video. This repository contains application code; it does **not** contain model weights. The honest pipeline test uses animated test cards and silent audio. The actual AI path requires a local LLM, a GPU with the official LTX 2.5 inference package/checkpoints, and Kokoro TTS. No paid video API is used.
 
 ## Run the pipeline test
@@ -24,7 +26,7 @@ npm run dev
 
 Open `http://localhost:3000`. Default settings run the **preview**: deterministic scene plan, simple non-AI colored test clips, silent WAVs, estimated script captions and FFmpeg render. It produces a playable MP4 and editable assets, but is not a content-quality demo. The backend API is at `http://127.0.0.1:8000/docs`.
 
-With Ollama selected, the pipeline first retrieves up to three Wikipedia introduction excerpts, saves their page links in the timeline, then asks the local AI director for a narrative angle and timed scenes. The first scene narration is the hook; the full script is assembled from the exact scene narration, so captions and script stay in sync. The director attaches page IDs to scenes it drew from. The UI shows the research notes and script for review. Wikipedia excerpts are shortened and attributed by link to each article; their text is under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/). This is source context, **not automatic fact checking**: check claims and source fit before publishing. Choose **No external research** for fiction or topics without encyclopedia coverage. Template preview has no factual research.
+With Ollama selected, the pipeline first retrieves up to three Wikipedia introduction excerpts, saves their page links in the timeline, then asks AI Director v2 for a narrative angle, story arc, visual bible and intentionally paced scenes. Scenes are normally 3–8 seconds instead of being forced into equal chunks. The first scene is the hook; the last scene closes with an ending or a natural CTA. Each scene stores its narrative beat, continuity guidance, camera direction, audio mode and source IDs. Narration length is validated against scene duration so the script stays speakable. The full script is assembled from the exact scene narration, so captions and script remain in sync. Wikipedia excerpts are shortened and attributed by link to each article; their text is under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/). This is source context, **not automatic fact checking**: check claims and source fit before publishing. Choose **No external research** for fiction or topics without encyclopedia coverage. Template preview has no factual research.
 
 ## Real model setup on your GPU machine
 
@@ -36,7 +38,7 @@ With Ollama selected, the pipeline first retrieves up to three Wikipedia introdu
 
 ## Editable output and behavior
 
-Each project lives in `content-factory/projects/<uuid>/`: `timeline.json` (the canonical timeline), `clips/`, `voice/`, `captions.srt`, `final.mp4`, and intermediate `work/` files. If `opentimelineio` is installed, `timeline.otio` is also written. Timeline JSON contains request settings, research excerpts and URLs, idea, hook, full script, scene prompts, narration, source IDs, duration, start times, asset paths, state and error. Schema version 2 is validated when loaded; original unversioned manifests are upgraded in place and unknown future versions are rejected. The OTIO file is an interchange export, not the source of truth. Editor compatibility depends on the editor and available adapters.
+Each project lives in `content-factory/projects/<uuid>/`: `timeline.json` (the canonical timeline), `clips/`, `voice/`, `captions.srt`, `final.mp4`, and intermediate `work/` files. If `opentimelineio` is installed, `timeline.otio` is also written. Timeline JSON contains request settings, research excerpts and URLs, idea, story arc, visual bible, hook, full script, scene beats, continuity notes, prompts, narration, source IDs, duration, start times, asset paths, state and error. Schema version 2 is validated when loaded; original unversioned manifests are upgraded in place and unknown future versions are rejected. The OTIO file is an interchange export, not the source of truth. Editor compatibility depends on the editor and available adapters.
 
 Click **Regenerate scene** after editing its prompt or audio mode. Each scene can use `narration` (dedicated Kokoro/silent voice track), `native` (LTX synchronized audio only), or `hybrid` (dedicated narration mixed over the LTX native track). Hybrid native audio defaults to 22% volume and can be changed with `HYBRID_NATIVE_VOLUME=0..1`. Narration/hybrid scenes measure the voice first and request video at that length; native scenes use the planned scene duration. The worker then recalculates subsequent start times/captions and rerenders the final video. The original target is saved as `planned_duration`. Choose Classic, Bold or Minimal captions and click **Render again with saved scenes** to change the final MP4 without running any model again. At present changing an entire project's voice requires editing project JSON and a future voice control. An error in one scene leaves intermediate files available for inspection.
 
@@ -65,10 +67,13 @@ Official references: [LTX-2 inference and model paths](https://github.com/Lightr
 
 ## Next engineering milestones
 
-1. Validate both persistent LTX modes and the three audio routes on a GPU host; record model-load cost, per-scene runtime, VRAM and output dimensions, then run a multi-scene real project in Fast and Quality modes.
-2. Compare Distilled versus DFR output on identical prompts and tune when the product should use each mode.
-3. Tune the AI director's scene/audio-mode choices from real outputs, including native dialogue versus hybrid ambience.
-4. Add voice controls, music/effects adapters and then a Wan provider; expand research and public-deployment controls after the core generation path is proven.
+GPU validation is intentionally deferred until suitable hardware is available. Current development should continue on CPU-testable product and pipeline work.
+
+1. Add reusable voice controls and voice configuration.
+2. Add background music / SFX adapters and better editing/timeline controls.
+3. Improve project editing and then expand research/factual grounding.
+4. Add another modular video provider such as Wan.
+5. When a GPU becomes available, validate LTX Fast vs DFR Quality and tune generation based on real outputs.
 
 ## GitHub development
 
