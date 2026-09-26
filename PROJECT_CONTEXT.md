@@ -219,9 +219,9 @@ Important completed milestones:
 - frontend controls for video quality and audio routing
 - GitHub Actions frontend build + backend CPU tests
 
-### Most recent development work
+### Most recent completed development work
 
-**AI Director v2** is the current milestone being completed. Its implementation includes narrative beats, story arc, visual bible, variable scene timing, speakable narration checks and continuity metadata. Once its CI is green and it is merged, the next development priority is reusable voice controls.
+**AI Director v2** is implemented with narrative beats, story arc, visual bible, variable scene timing, speakable narration checks and continuity metadata. Its CPU contract/integration tests and frontend build pass. The next development priority is reusable voice controls.
 
 ## 11. Important Source Files
 
@@ -284,16 +284,15 @@ When a GPU becomes available, the first validation should compare identical prom
 
 Current priority order:
 
-1. Finish CI/merge for **AI Director v2**
-2. Voice controls and reusable voice configuration
-3. Background music / SFX architecture
-4. Better editing/transitions and timeline controls
-5. Better project editing workflow
-6. Broader research / stronger factual grounding
-7. Add another video provider such as Wan
-8. Real GPU validation of LTX Fast vs DFR Quality
-9. Quality tuning based on real generated outputs
-10. Social publishing/analytics only after generation quality is proven
+1. Voice controls and reusable voice configuration
+2. Background music / SFX architecture
+3. Better editing/transitions and timeline controls
+4. Better project editing workflow
+5. Broader research / stronger factual grounding
+6. Add another video provider such as Wan
+7. Real GPU validation of LTX Fast vs DFR Quality
+8. Quality tuning based on real generated outputs
+9. Social publishing/analytics only after generation quality is proven
 
 ## 14. Development Rules for Future Agents
 
