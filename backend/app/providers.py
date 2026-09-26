@@ -92,5 +92,16 @@ def preflight(request: core.Request) -> None:
         adapter.check(request)
 
 
+def preflight_voice(request: core.Request) -> None:
+    """Check only dependencies needed to regenerate narration/captions, not the GPU video stack."""
+    selections = {"voice": request.voice_provider, "captions": caption_choice(request)}
+    for kind, name in selections.items():
+        try:
+            adapter = REGISTRY[kind][name]
+        except KeyError as exc:
+            raise RuntimeError(f"Unknown {kind} provider: {name}") from exc
+        adapter.check(request)
+
+
 def make(kind: str, name: str):
     return REGISTRY[kind][name].factory()
