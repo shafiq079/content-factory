@@ -217,6 +217,8 @@ class LTX25Video(VideoGenerator):
             video_vae_path=str(paths["video_vae"]),
             audio_vae_path=str(paths["audio_vae"]),
         )
+        import torch
+
         if mode == "quality":
             from ltx_core.loader import LTXV_LORA_COMFY_RENAMING_MAP, LoraPathStrengthAndSDOps
             from ltx_pipelines.dfr_pipeline import DFRPipeline
@@ -242,7 +244,11 @@ class LTX25Video(VideoGenerator):
                 spatial_upsampler_path=str(paths["upscaler"]),
                 loras=[],
             )
-        return pipeline, encode_video, get_video_chunks_number
+        def infer(**kwargs):
+            with torch.inference_mode():
+                return pipeline(**kwargs)
+
+        return infer, encode_video, get_video_chunks_number
 
     @classmethod
     def _runtime_for(cls, paths: dict[str, Path], mode: str):
@@ -433,7 +439,8 @@ def export_otio(project_dir: Path, scenes: list[dict]) -> None:
         span = otio.opentime.TimeRange(otio.opentime.RationalTime(0,rate), otio.opentime.RationalTime(round(s["duration"]*rate),rate))
         track.append(otio.schema.Clip(name=f"Scene {s['id']}", media_reference=media, source_range=span,
                                       metadata={"narration": s["narration"], "prompt": s["visual_prompt"],
-                                                "audio_mode": s.get("audio_mode", "narration")}))
+                                                "audio_mode": s.get("audio_mode", "narration"),
+                                                "generation_mode": s.get("generation_mode", "fast")}))
     otio.adapters.write_to_file(timeline, str(project_dir / "timeline.otio"))
 
 
