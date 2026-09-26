@@ -63,7 +63,8 @@ def whisper_check(_: core.Request) -> None:
 
 
 REGISTRY: dict[str, dict[str, Adapter]] = {
-    "research": {"none": Adapter(research.NoResearch, ready), "wikipedia": Adapter(research.WikipediaResearch, ready)},
+    "research": {"none": Adapter(research.NoResearch, ready), "wikipedia": Adapter(research.WikipediaResearch, ready),
+                 "broader": Adapter(research.BroaderResearch, ready)},
     "planner": {"template": Adapter(core.TemplatePlanner, ready), "ollama": Adapter(core.OllamaPlanner, ollama_check)},
     "video": {"preview": Adapter(core.PreviewVideo, ready), "ltx25": Adapter(core.LTX25Video, ltx_check)},
     "voice": {"silent": Adapter(core.SilentVoice, ready), "kokoro": Adapter(core.KokoroVoice, kokoro_check)},
@@ -73,7 +74,7 @@ REGISTRY: dict[str, dict[str, Adapter]] = {
 
 def research_choice(request: core.Request) -> str:
     if request.research_provider == "auto":
-        return "wikipedia" if request.planner_provider == "ollama" else "none"
+        return "broader" if request.planner_provider == "ollama" else "none"
     return request.research_provider
 
 
